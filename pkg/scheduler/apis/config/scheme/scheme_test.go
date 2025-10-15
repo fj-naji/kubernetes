@@ -57,7 +57,6 @@ profiles:
   - name: DynamicResources
     args:
       filterTimeout: 10s
-      bindingTimeout: 10m0s
   - name: InterPodAffinity
     args:
       hardPodAffinityWeight: 5
@@ -108,10 +107,7 @@ profiles:
 						},
 						{
 							Name: "DynamicResources",
-							Args: &config.DynamicResourcesArgs{
-								FilterTimeout: &metav1.Duration{Duration: 10 * time.Second},
-								BindingTimeout: &metav1.Duration{Duration: 10 * time.Minute},
-							},
+							Args: &config.DynamicResourcesArgs{FilterTimeout: &metav1.Duration{Duration: 10 * time.Second}},
 						},
 						{
 							Name: "InterPodAffinity",
@@ -239,10 +235,7 @@ profiles:
 						},
 						{
 							Name: "DynamicResources",
-							Args: &config.DynamicResourcesArgs{
-								FilterTimeout: &metav1.Duration{Duration: 10 * time.Second},
-								BindingTimeout: nil,
-							},
+							Args: &config.DynamicResourcesArgs{FilterTimeout: &metav1.Duration{Duration: 10 * time.Second}},
 						},
 						{
 							Name: "InterPodAffinity",
@@ -395,10 +388,7 @@ profiles:
 						},
 						{
 							Name: "DynamicResources",
-							Args: &config.DynamicResourcesArgs{
-								FilterTimeout: &metav1.Duration{Duration: 10 * time.Second},
-								//BindingTimeout: &metav1.Duration{Duration: 10 * time.Minute},
-							},
+							Args: &config.DynamicResourcesArgs{FilterTimeout: &metav1.Duration{Duration: 10 * time.Second}},
 						},
 						{
 							Name: "InterPodAffinity",
@@ -474,10 +464,7 @@ profiles:
 						},
 						{
 							Name: "DynamicResources",
-							Args: &config.DynamicResourcesArgs{
-								FilterTimeout: &metav1.Duration{Duration: 10 * time.Second},
-								BindingTimeout: nil,
-							},
+							Args: &config.DynamicResourcesArgs{FilterTimeout: &metav1.Duration{Duration: 10 * time.Second}},
 						},
 						{
 							Name: "NodeAffinity",
