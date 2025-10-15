@@ -167,6 +167,7 @@ type DynamicResources struct {
 	enabled       bool
 	fts           feature.Features
 	filterTimeout time.Duration
+	bindingTimeout time.Duration
 	fh            fwk.Handle
 	clientset     kubernetes.Interface
 	celCache      *cel.Cache
@@ -192,6 +193,7 @@ func New(ctx context.Context, plArgs runtime.Object, fh fwk.Handle, fts feature.
 		enabled:       true,
 		fts:           fts,
 		filterTimeout: ptr.Deref(args.FilterTimeout, metav1.Duration{}).Duration,
+		bindingTimeout: ptr.Deref(args.BindingTimeout, metav1.Duration{}).Duration,
 
 		fh:        fh,
 		clientset: fh.ClientSet(),
@@ -1329,10 +1331,19 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 
 	// We need to wait for the device to be attached to the node.
 	pl.fh.EventRecorder().Eventf(pod, nil, v1.EventTypeNormal, "BindingConditionsPending", "Scheduling", "waiting for binding conditions for device on node %s", nodeName)
-	err = wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Duration(BindingTimeoutDefaultSeconds)*time.Second, true,
+	// err = wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Duration(BindingTimeoutDefaultSeconds)*time.Second, true,
+	// 	func(ctx context.Context) (bool, error) {
+	// 		return pl.isPodReadyForBinding(state)
+	// 	})
+	err = wait.PollUntilContextTimeout(
+		ctx,
+		5*time.Second,
+		pl.bindingTimeout,  // by default 10 minutes
+		true,
 		func(ctx context.Context) (bool, error) {
 			return pl.isPodReadyForBinding(state)
-		})
+		},
+	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			err = errors.New("device binding timeout")

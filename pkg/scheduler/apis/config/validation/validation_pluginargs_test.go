@@ -1163,10 +1163,12 @@ func TestValidateDynamicResourcesArgs(t *testing.T) {
 		args                  config.DynamicResourcesArgs
 		wantErrs              field.ErrorList
 		filterTimeoutDisabled bool
+		bindingTimeoutDisabled  bool
 	}{
 		"valid args (default)": {
 			args: config.DynamicResourcesArgs{
 				FilterTimeout: &metav1.Duration{Duration: config.DynamicResourcesFilterTimeoutDefault},
+				BindingTimeout: &metav1.Duration{Duration: config.DynamicResourcesBindingTimeoutDefault},
 			},
 		},
 		"valid args (disabled)": {
@@ -1197,11 +1199,62 @@ func TestValidateDynamicResourcesArgs(t *testing.T) {
 				},
 			},
 		},
+
+		// BindingTimeout tests
+		"valid BindingTimeout": {
+			args: config.DynamicResourcesArgs{
+				BindingTimeout: &metav1.Duration{Duration: 5 * time.Minute},
+			},
+		},
+		"negative BindingTimeout": {
+			args: config.DynamicResourcesArgs{
+				BindingTimeout: &metav1.Duration{Duration: -1 * time.Minute},
+			},
+			wantErrs: field.ErrorList{
+				&field.Error{
+					Type:   field.ErrorTypeInvalid,
+					Field:  "bindingTimeout",
+					Detail: "must be >= 0",
+				},
+			},
+		},
+		"too large BindingTimeout": {
+			args: config.DynamicResourcesArgs{
+				BindingTimeout: &metav1.Duration{Duration: 25 * time.Hour},
+			},
+			wantErrs: field.ErrorList{
+				&field.Error{
+					Type:   field.ErrorTypeInvalid,
+					Field:  "bindingTimeout",
+					Detail: "must be <= 24h",
+				},
+			},
+		},
+		"BindingTimeout set but feature disabled": {
+			args: config.DynamicResourcesArgs{
+				BindingTimeout: &metav1.Duration{Duration: 5 * time.Minute},
+			},
+			bindingTimeoutDisabled: true,
+			wantErrs: field.ErrorList{
+				&field.Error{
+					Type:   field.ErrorTypeForbidden,
+					Field:  "bindingTimeout",
+					Detail: "DRADeviceBindingConditions feature gate is disabled",
+				},
+			},
+		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			err := ValidateDynamicResourcesArgs(nil, &tc.args, schedfeature.Features{EnableDRASchedulerFilterTimeout: !tc.filterTimeoutDisabled})
+			err := ValidateDynamicResourcesArgs(
+				nil,
+				&tc.args,
+				schedfeature.Features{
+					EnableDRASchedulerFilterTimeout:  !tc.filterTimeoutDisabled,
+					EnableDRADeviceBindingConditions: !tc.bindingTimeoutDisabled,
+				},
+			)
 			if diff := cmp.Diff(tc.wantErrs.ToAggregate(), err, ignoreBadValueDetail); diff != "" {
 				t.Errorf("ValidateDynamicResourcesArgs returned err (-want,+got):\n%s", diff)
 			}

@@ -48,6 +48,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 )
 
 // NewCommand creates a *cobra.Command object with default parameters.
@@ -210,6 +211,9 @@ func NewCommand() *cobra.Command {
 		for i := 0; i < *numDevices; i++ {
 			devices[i] = resourceapi.Device{
 				Name: fmt.Sprintf("device-%02d", i),
+				BindsToNode:              ptr.To(true),
+				BindingConditions:        []string{"FabricDeviceReady"},
+				BindingFailureConditions: []string{"FabricDeviceReschedule", "FabricDeviceFailed"},
 			}
 		}
 		driverResources := resourceslice.DriverResources{

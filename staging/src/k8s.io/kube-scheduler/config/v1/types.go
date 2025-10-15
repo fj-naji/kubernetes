@@ -432,6 +432,11 @@ type DynamicResourcesArgs struct {
 	//
 	// Setting it to zero completely disables the timeout.
 	FilterTimeout *metav1.Duration `json:"filterTimeout"`
+
+	// BindingTimeout is how long PreBind waits for ResourceClaim device
+    // conditions when BindingConditions are present. If 0 => no waiting.
+    BindingTimeout *metav1.Duration `json:"bindingTimeout,omitempty"`
 }
 
 const DynamicResourcesFilterTimeoutDefault = 10 * time.Second
+const DynamicResourcesBindingTimeoutDefault = 10 * time.Minute

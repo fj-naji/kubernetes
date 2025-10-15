@@ -68459,6 +68459,12 @@ func schema_k8sio_kube_scheduler_config_v1_DynamicResourcesArgs(ref common.Refer
 							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
 						},
 					},
+					"bindingTimeout": {
+						SchemaProps: spec.SchemaProps{
+							Description: "BindingTimeout is how long PreBind waits for ResourceClaim device conditions when BindingConditions are present. If 0 => no waiting.",
+							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
+						},
+					},
 				},
 				Required: []string{"filterTimeout"},
 			},

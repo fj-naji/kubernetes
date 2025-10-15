@@ -19,7 +19,7 @@ package validation
 import (
 	"fmt"
 	"strings"
-
+	"time"
 	v1 "k8s.io/api/core/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/util/errors"
@@ -334,6 +334,33 @@ func ValidateNodeResourcesFitArgs(path *field.Path, args *config.NodeResourcesFi
 // the corresponding feature is disabled is considered an error.
 func ValidateDynamicResourcesArgs(path *field.Path, args *config.DynamicResourcesArgs, fts feature.Features) error {
 	var allErrs field.ErrorList
+
+	// BindingTimeout validation
+	if fts.EnableDRADeviceBindingConditions {
+		if args.BindingTimeout != nil {
+			d := args.BindingTimeout.Duration
+			if d < 0 {
+				allErrs = append(allErrs, field.Invalid(
+					path.Child("bindingTimeout"), d, "must be >= 0",
+				))
+			}
+			const max = 24 * time.Hour // optional upper bound
+			if d > max {
+				allErrs = append(allErrs, field.Invalid(
+					path.Child("bindingTimeout"), d, "must be <= 24h",
+				))
+			}
+		}
+	} else {
+		// If feature disabled, BindingTimeout should not be set
+		if args.BindingTimeout != nil {
+			allErrs = append(allErrs, field.Forbidden(
+				path.Child("bindingTimeout"),
+				"DRADeviceBindingConditions feature gate is disabled",
+			))
+		}
+	}
+	
 	if fts.EnableDRASchedulerFilterTimeout {
 		if args.FilterTimeout != nil && args.FilterTimeout.Duration < 0 {
 			allErrs = append(allErrs, field.Invalid(path.Child("filterTimeout"), args.FilterTimeout, "must be zero or positive"))
