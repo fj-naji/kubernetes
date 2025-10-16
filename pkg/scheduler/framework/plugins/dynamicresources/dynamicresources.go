@@ -1346,7 +1346,7 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			err = errors.New("device binding timeout")
+			err = fmt.Errorf("claim %s binding timeout", claim.Name)
 		}
 		// Returning an error here causes another scheduling attempt.
 		// In that next attempt, PreFilter will detect the timeout or
