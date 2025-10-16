@@ -1313,45 +1313,38 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 			// Updated here such that Unreserve can work with patched claim.
 			state.claims.set(index, claim)
 		}
-	}
 
-	if !pl.fts.EnableDRADeviceBindingConditions || !pl.fts.EnableDRAResourceClaimDeviceStatus {
-		// If we don't have binding conditions, we can return early.
-		// The claim is now reserved for the pod and the scheduler can proceed with binding.
-		return nil
-	}
-
-	// We need to check if the device is attached to the node.
-	needToWait := hasBindingConditions(state)
-
-	// If no device needs to be prepared, we can return early.
-	if !needToWait {
-		return nil
-	}
-
-	// We need to wait for the device to be attached to the node.
-	pl.fh.EventRecorder().Eventf(pod, nil, v1.EventTypeNormal, "BindingConditionsPending", "Scheduling", "waiting for binding conditions for device on node %s", nodeName)
-	// err = wait.PollUntilContextTimeout(ctx, 5*time.Second, time.Duration(BindingTimeoutDefaultSeconds)*time.Second, true,
-	// 	func(ctx context.Context) (bool, error) {
-	// 		return pl.isPodReadyForBinding(state)
-	// 	})
-	err = wait.PollUntilContextTimeout(
-		ctx,
-		5*time.Second,
-		pl.bindingTimeout, // by default 10 minutes
-		true,
-		func(ctx context.Context) (bool, error) {
-			return pl.isPodReadyForBinding(state)
-		},
-	)
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			err = fmt.Errorf("claim %s binding timeout", claim.Name)
+		if !pl.fts.EnableDRADeviceBindingConditions || !pl.fts.EnableDRAResourceClaimDeviceStatus {
+			// If we don't have binding conditions, we can return early.
+			// The claim is now reserved for the pod and the scheduler can proceed with binding.
+			continue
 		}
-		// Returning an error here causes another scheduling attempt.
-		// In that next attempt, PreFilter will detect the timeout or
-		// error and try to recover.
-		return statusError(logger, err)
+
+		if !hasBindingConditions(state) {
+			// No binding conditions to wait for.
+			continue
+		}
+
+		pl.fh.EventRecorder().Eventf(
+			pod, nil, v1.EventTypeNormal, "BindingConditionsPending", "Scheduling",
+			"waiting for binding conditions for device on node %s", nodeName,
+		)
+
+		err = wait.PollUntilContextTimeout(
+			ctx,
+			5*time.Second,
+			pl.bindingTimeout, // by default 10 minutes
+			true,
+			func(ctx context.Context) (bool, error) {
+				return pl.isPodReadyForBinding(state)
+			},
+		)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				err = fmt.Errorf("claim %s binding timeout", claim.Name)
+			}
+			return statusError(logger, err)
+		}
 	}
 
 	// If we get here, we know that reserving the claim for
