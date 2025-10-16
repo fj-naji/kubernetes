@@ -1160,14 +1160,14 @@ func TestValidateRequestedToCapacityRatioScoringStrategy(t *testing.T) {
 
 func TestValidateDynamicResourcesArgs(t *testing.T) {
 	cases := map[string]struct {
-		args                  config.DynamicResourcesArgs
-		wantErrs              field.ErrorList
-		filterTimeoutDisabled bool
-		bindingTimeoutDisabled  bool
+		args                   config.DynamicResourcesArgs
+		wantErrs               field.ErrorList
+		filterTimeoutDisabled  bool
+		bindingTimeoutDisabled bool
 	}{
 		"valid args (default)": {
 			args: config.DynamicResourcesArgs{
-				FilterTimeout: &metav1.Duration{Duration: config.DynamicResourcesFilterTimeoutDefault},
+				FilterTimeout:  &metav1.Duration{Duration: config.DynamicResourcesFilterTimeoutDefault},
 				BindingTimeout: &metav1.Duration{Duration: config.DynamicResourcesBindingTimeoutDefault},
 			},
 		},

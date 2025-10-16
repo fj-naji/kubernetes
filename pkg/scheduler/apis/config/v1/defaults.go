@@ -250,7 +250,7 @@ func SetDefaults_DynamicResourcesArgs(obj *configv1.DynamicResourcesArgs) {
 	}
 
 	// Only apply BindingTimeout default when DRADeviceBindingConditions is enabled
-    if obj.BindingTimeout == nil && feature.DefaultFeatureGate.Enabled(features.DRADeviceBindingConditions) {
-        obj.BindingTimeout = &metav1.Duration{Duration: configv1.DynamicResourcesBindingTimeoutDefault}
-    }
+	if obj.BindingTimeout == nil && feature.DefaultFeatureGate.Enabled(features.DRADeviceBindingConditions) {
+		obj.BindingTimeout = &metav1.Duration{Duration: configv1.DynamicResourcesBindingTimeoutDefault}
+	}
 }

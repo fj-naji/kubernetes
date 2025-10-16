@@ -210,7 +210,7 @@ func NewCommand() *cobra.Command {
 		devices := make([]resourceapi.Device, *numDevices)
 		for i := 0; i < *numDevices; i++ {
 			devices[i] = resourceapi.Device{
-				Name: fmt.Sprintf("device-%02d", i),
+				Name:                     fmt.Sprintf("device-%02d", i),
 				BindsToNode:              ptr.To(true),
 				BindingConditions:        []string{"FabricDeviceReady"},
 				BindingFailureConditions: []string{"FabricDeviceReschedule", "FabricDeviceFailed"},

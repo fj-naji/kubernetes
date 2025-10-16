@@ -164,14 +164,14 @@ type nodeAllocation struct {
 
 // DynamicResources is a plugin that ensures that ResourceClaims are allocated.
 type DynamicResources struct {
-	enabled       bool
-	fts           feature.Features
-	filterTimeout time.Duration
+	enabled        bool
+	fts            feature.Features
+	filterTimeout  time.Duration
 	bindingTimeout time.Duration
-	fh            fwk.Handle
-	clientset     kubernetes.Interface
-	celCache      *cel.Cache
-	draManager    fwk.SharedDRAManager
+	fh             fwk.Handle
+	clientset      kubernetes.Interface
+	celCache       *cel.Cache
+	draManager     fwk.SharedDRAManager
 }
 
 // New initializes a new plugin and returns it.
@@ -190,9 +190,9 @@ func New(ctx context.Context, plArgs runtime.Object, fh fwk.Handle, fts feature.
 	}
 
 	pl := &DynamicResources{
-		enabled:       true,
-		fts:           fts,
-		filterTimeout: ptr.Deref(args.FilterTimeout, metav1.Duration{}).Duration,
+		enabled:        true,
+		fts:            fts,
+		filterTimeout:  ptr.Deref(args.FilterTimeout, metav1.Duration{}).Duration,
 		bindingTimeout: ptr.Deref(args.BindingTimeout, metav1.Duration{}).Duration,
 
 		fh:        fh,
@@ -1338,7 +1338,7 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 	err = wait.PollUntilContextTimeout(
 		ctx,
 		5*time.Second,
-		pl.bindingTimeout,  // by default 10 minutes
+		pl.bindingTimeout, // by default 10 minutes
 		true,
 		func(ctx context.Context) (bool, error) {
 			return pl.isPodReadyForBinding(state)

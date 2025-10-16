@@ -18,8 +18,6 @@ package validation
 
 import (
 	"fmt"
-	"strings"
-	"time"
 	v1 "k8s.io/api/core/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
 	"k8s.io/apimachinery/pkg/util/errors"
@@ -30,6 +28,8 @@ import (
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
+	"strings"
+	"time"
 )
 
 // supportedScoringStrategyTypes has to be a set of strings for use with field.Unsupported
@@ -360,7 +360,7 @@ func ValidateDynamicResourcesArgs(path *field.Path, args *config.DynamicResource
 			))
 		}
 	}
-	
+
 	if fts.EnableDRASchedulerFilterTimeout {
 		if args.FilterTimeout != nil && args.FilterTimeout.Duration < 0 {
 			allErrs = append(allErrs, field.Invalid(path.Child("filterTimeout"), args.FilterTimeout, "must be zero or positive"))
