@@ -1470,12 +1470,7 @@ func testDeviceBindingConditions(tCtx ktesting.TContext, enabled bool) {
 	start := time.Now()
 	claim1 := createClaim(tCtx, namespace, "-a", class, claim)
 	pod := createPod(tCtx, namespace, "-a", claim1, podWithClaimName)
-	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
-		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claim1.Name, metav1.GetOptions{})
-		tCtx.ExpectNoError(err)
-		claim1 = c
-		return claim1
-	}).WithTimeout(10*time.Second).WithPolling(time.Second).Should(gomega.HaveField("Status.Allocation", gomega.Not(gomega.BeNil())), "Claim should have been allocated.")
+	claim1 = waitForClaimAllocatedToDevice(tCtx, namespace, claim1.Name, 10*time.Second)
 	end := time.Now()
 	gomega.NewWithT(tCtx).Expect(claim1).To(gomega.HaveField("Status.Allocation", gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
 		"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
@@ -1497,12 +1492,7 @@ func testDeviceBindingConditions(tCtx ktesting.TContext, enabled bool) {
 	// Second pod should get the device with binding conditions.
 	claim2 := createClaim(tCtx, namespace, "-b", class, claim)
 	pod = createPod(tCtx, namespace, "-b", claim2, podWithClaimName)
-	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
-		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claim2.Name, metav1.GetOptions{})
-		tCtx.ExpectNoError(err)
-		claim2 = c
-		return claim2
-	}).WithTimeout(10*time.Second).WithPolling(time.Second).Should(gomega.HaveField("Status.Allocation", gomega.Not(gomega.BeNil())), "Claim should have been allocated.")
+	claim2 = waitForClaimAllocatedToDevice(tCtx, namespace, claim2.Name, 10*time.Second)
 	end = time.Now()
 	gomega.NewWithT(tCtx).Expect(claim2).To(gomega.HaveField("Status.Allocation", gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
 		"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
@@ -1546,31 +1536,10 @@ func testDeviceBindingConditions(tCtx ktesting.TContext, enabled bool) {
 	tCtx.ExpectNoError(err, "add binding failure condition to second claim")
 
 	// Wait until the claim.status.Devices[0].Conditions become nil again after rescheduling.
-	setConditionsFlag := false
-	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
-		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claim2.Name, metav1.GetOptions{})
-		tCtx.ExpectNoError(err, "get claim")
-		claim2 = c
-		// Phase 1: saw conditions once
-		if claim2.Status.Devices != nil && len(claim2.Status.Devices[0].Conditions) != 0 {
-			setConditionsFlag = true
-		}
-		// Phase 2: after seeing conditions, wait until they are cleared AND allocation is present for the same device.
-		if setConditionsFlag {
-			// conditions cleared?
-			cleared := len(claim2.Status.Devices) == 0
-			// allocation restored and matches the intended device?
-			allocated := claim2.Status.Allocation != nil &&
-				len(claim2.Status.Allocation.Devices.Results) == 1 &&
-				claim2.Status.Allocation.Devices.Results[0].Driver == driverName &&
-				claim2.Status.Allocation.Devices.Results[0].Pool == poolWithBinding &&
-				claim2.Status.Allocation.Devices.Results[0].Device == "with-binding"
-			if cleared && allocated {
-				return nil // done waiting
-			}
-		}
-		return claim2
-	}).WithTimeout(30*time.Second).WithPolling(time.Second).Should(gomega.BeNil(), "claim should be re-allocated to with-binding before proceeding")
+	waitDeviceConditionsBeNil(tCtx, namespace, claim2.Name, 30*time.Second)
+	// allocation restored?
+	claim2 = waitForClaimAllocatedToDevice(tCtx, namespace, claim2.Name, 10*time.Second)
+
 	// Now it's safe to set the final binding condition.
 	// Allow the scheduler to proceed.
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -1597,4 +1566,155 @@ func testDeviceBindingConditions(tCtx ktesting.TContext, enabled bool) {
 	})
 	tCtx.ExpectNoError(err, "add binding condition to second claim")
 	waitForPodScheduled(tCtx, namespace, pod.Name)
+
+	// When device preparation fails on a node and a BindingFailure is written, verify that rescheduling leads to a successful binding on a different node.
+	enableTaints := []bool{false, true}
+	for _, enableTaint := range enableTaints {
+		namespace2 := createTestNamespace(tCtx, nil)
+		class2, driverName2 := createTestClass(tCtx, namespace2)
+
+		anotherNodeName := "worker-1"
+		poolWithBinding2 := nodeName + "-with-binding-2"
+		poolWithoutBinding2 := anotherNodeName + "-without-binding-2"
+
+		slice2 := &resourceapi.ResourceSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: namespace2 + "-",
+			},
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeName: &nodeName,
+				Pool: resourceapi.ResourcePool{
+					Name:               poolWithBinding2,
+					ResourceSliceCount: 1,
+				},
+				Driver: driverName2,
+				Devices: []resourceapi.Device{
+					{
+						Name:                     "with-binding-2",
+						BindingConditions:        []string{bindingCondition},
+						BindingFailureConditions: []string{failureCondition},
+					},
+				},
+			},
+		}
+		slice2 = createSlice(tCtx, slice2)
+
+		// Schedule the first pod to a device that has binding conditions set,
+		// ensuring the initial allocation occurs on the intended node.
+		claim3 := createClaim(tCtx, namespace2, "-a", class2, claim)
+		pod = createPod(tCtx, namespace2, "-a", claim3, podWithClaimName)
+		claim3 = waitForClaimAllocatedToDevice(tCtx, namespace2, claim3.Name, 10*time.Second)
+		gomega.NewWithT(tCtx).Expect(claim3).To(gomega.HaveField("Status.Allocation", gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+			"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
+				Results: []resourceapi.DeviceRequestAllocationResult{{
+					Request:                  claim3.Spec.Devices.Requests[0].Name,
+					Driver:                   driverName2,
+					Pool:                     poolWithBinding2,
+					Device:                   "with-binding-2",
+					BindingConditions:        []string{bindingCondition},
+					BindingFailureConditions: []string{failureCondition},
+				}}}),
+		}))), "third allocated claim to the device with binding conditions")
+
+		// Emulate a device preparation failure scenario by either tainting the device or removing it.
+		featuregatetesting.SetFeatureGateDuringTest(tCtx, utilfeature.DefaultFeatureGate, features.DRADeviceTaints, enableTaint)
+		if enableTaint {
+			// Add taint to the device with binding conditions,
+			// preventing further scheduling to this device.
+			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latest, err := tCtx.Client().ResourceV1().ResourceSlices().Get(tCtx, slice2.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				slice2 = latest.DeepCopy()
+				slice2.Spec.Devices[0].Taints = []resourceapi.DeviceTaint{
+					{
+						Key:    "dra-test.k8s.io/preparation-failed",
+						Value:  "true",
+						Effect: resourceapi.DeviceTaintEffectNoSchedule,
+					},
+				}
+				_, err = tCtx.Client().ResourceV1().ResourceSlices().Update(tCtx, slice2, metav1.UpdateOptions{})
+				return err
+			})
+			tCtx.ExpectNoError(err, "add taint to second slice")
+		} else {
+			// Remove the device from the slice to simulate its unavailability due to preparation failure.
+			err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				latest, err := tCtx.Client().ResourceV1().ResourceSlices().Get(tCtx, slice2.Name, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				slice2 = latest.DeepCopy()
+				slice2.Spec.Devices = nil
+				_, err = tCtx.Client().ResourceV1().ResourceSlices().Update(tCtx, slice2, metav1.UpdateOptions{})
+				return err
+			})
+			tCtx.ExpectNoError(err, "remove devices in slice")
+		}
+
+		// Create a new slice on a different node with a device that has no binding conditions,
+		// allowing the scheduler to retry and allocate the claim successfully.
+		sliceWithoutBinding2 := &resourceapi.ResourceSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: namespace2 + "-without-binding-",
+			},
+			Spec: resourceapi.ResourceSliceSpec{
+				NodeName: &anotherNodeName,
+				Pool: resourceapi.ResourcePool{
+					Name:               poolWithoutBinding2,
+					ResourceSliceCount: 1,
+				},
+				Driver: driverName2,
+				Devices: []resourceapi.Device{
+					{
+						Name: "without-binding-2",
+					},
+				},
+			},
+		}
+		_ = createSlice(tCtx, sliceWithoutBinding2)
+
+		// Explicitly fail the binding condition for the third claim to trigger rescheduling logic.
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			latest, err := tCtx.Client().ResourceV1().ResourceClaims(namespace2).Get(tCtx, claim3.Name, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			claim3 = latest.DeepCopy()
+			claim3.Status.Devices = []resourceapi.AllocatedDeviceStatus{{
+				Driver: driverName2,
+				Pool:   poolWithBinding2,
+				Device: "with-binding-2",
+				Conditions: []metav1.Condition{{
+					Type:               failureCondition,
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: claim3.Generation,
+					LastTransitionTime: metav1.Now(),
+					Reason:             "Testing",
+					Message:            "The test has seen the allocation and is failing the binding.",
+				}},
+			}}
+			_, err = tCtx.Client().ResourceV1().ResourceClaims(namespace2).UpdateStatus(tCtx, claim3, metav1.UpdateOptions{})
+			return err
+		})
+		tCtx.ExpectNoError(err, "add binding failure condition to third claim")
+
+		// Wait until the claim.status.Devices[0].Conditions become nil again after rescheduling.
+		waitDeviceConditionsBeNil(tCtx, namespace2, claim3.Name, 30*time.Second)
+		// allocation restored?
+		claim3 = waitForClaimAllocatedToDevice(tCtx, namespace2, claim3.Name, 10*time.Second)
+
+		gomega.NewWithT(tCtx).Expect(claim3).To(gomega.HaveField("Status.Allocation", gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+			"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
+				Results: []resourceapi.DeviceRequestAllocationResult{{
+					Request: claim3.Spec.Devices.Requests[0].Name,
+					Driver:  driverName2,
+					Pool:    poolWithoutBinding2,
+					Device:  "without-binding-2",
+				}}}),
+		}))), "third allocated claim to the device without binding conditions")
+
+		waitForPodScheduled(tCtx, namespace2, pod.Name)
+	}
 }
