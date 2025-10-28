@@ -190,6 +190,7 @@ func waitForNotFound[T any](tCtx ktesting.TContext, get func(context.Context, st
 }
 
 func waitForClaimAllocatedToDevice(tCtx ktesting.TContext, namespace, claimName string, timeout time.Duration) *resourceapi.ResourceClaim {
+	tCtx.Helper()
 	var latestClaim *resourceapi.ResourceClaim
 	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
 		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claimName, metav1.GetOptions{})
@@ -202,6 +203,7 @@ func waitForClaimAllocatedToDevice(tCtx ktesting.TContext, namespace, claimName 
 
 // Wait until the claim.status.Devices[0].Conditions become nil again after rescheduling.
 func waitDeviceConditionsBeNil(tCtx ktesting.TContext, namespace, claimName string, timeout time.Duration) {
+	tCtx.Helper()
 	setConditionsFlag := false
 	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
 		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claimName, metav1.GetOptions{})
@@ -220,4 +222,16 @@ func waitDeviceConditionsBeNil(tCtx ktesting.TContext, namespace, claimName stri
 		}
 		return latestClaim
 	}).WithTimeout(timeout).WithPolling(time.Second).Should(gomega.BeNil(), "claim should not have any condition")
+}
+
+func isBindingTimeout(tCtx ktesting.TContext, namespace, podName string) bool {
+	p, err := tCtx.Client().CoreV1().Pods(namespace).Get(tCtx, podName, metav1.GetOptions{})
+	if err == nil {
+		for _, c := range p.Status.Conditions {
+			if strings.Contains(strings.ToLower(c.Message), "binding timeout") {
+				return true
+			}
+		}
+	}
+	return false
 }

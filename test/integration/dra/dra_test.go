@@ -1717,4 +1717,218 @@ func testDeviceBindingConditions(tCtx ktesting.TContext, enabled bool) {
 
 		waitForPodScheduled(tCtx, namespace2, pod.Name)
 	}
+
+	// Verifies that a short bindingTimeout triggers
+	// a PreBind timeout when the required BindingConditions never become true.
+	namespace3 := createTestNamespace(tCtx, nil)
+	class3, driver3 := createTestClass(tCtx, namespace3)
+
+	poolWithBinding3 := nodeName + "-with-binding-3"
+
+	// One device that REQUIRES a binding condition.
+	slice3 := &resourceapi.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: namespace3 + "-timeout-"},
+		Spec: resourceapi.ResourceSliceSpec{
+			NodeName: &nodeName,
+			Pool: resourceapi.ResourcePool{
+				Name:               poolWithBinding3,
+				ResourceSliceCount: 1,
+			},
+			Driver: driver3,
+			Devices: []resourceapi.Device{{
+				Name:                     "with-binding-3",
+				BindingConditions:        []string{bindingCondition},
+				BindingFailureConditions: []string{failureCondition},
+			}},
+		},
+	}
+	slice3 = createSlice(tCtx, slice3)
+
+	wantTO := 6 * time.Second // bindingTimeout
+	minTO := wantTO * 8 / 10  // 0.8 * wantTO
+	maxTO := wantTO * 19 / 10 // 1.9 * wantTO
+
+	value := tCtx.Value(schedulerKey)
+	if value == nil {
+		tCtx.Fatal("internal error: startScheduler without a prior prepareScheduler call")
+	}
+	scheduler := value.(*schedulerSingleton)
+	scheduler.stop(tCtx)
+
+	// Start the scheduler with a short binding timeout.
+	cfg := fmt.Sprintf(`
+profiles:
+- schedulerName: default-scheduler
+  pluginConfig:
+  - name: DynamicResources
+    args:
+      bindingTimeout: %s
+`, wantTO.String())
+
+	startSchedulerWithConfig(tCtx, cfg)
+
+	// Create claim+pod: allocation happens, then scheduler waits in PreBind.
+	claim4 := createClaim(tCtx, namespace3, "-timeout-enforced", class3, claim)
+	pod = createPod(tCtx, namespace3, "-timeout-enforced", claim4, podWithClaimName)
+
+	// Wait until the claim is allocated.
+	allocatedClaim := waitForClaimAllocatedToDevice(tCtx, namespace3, claim4.Name, 10*time.Second)
+
+	gomega.NewWithT(tCtx).Expect(allocatedClaim).To(gomega.HaveField(
+		"Status.Allocation",
+		gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+			"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
+				Results: []resourceapi.DeviceRequestAllocationResult{{
+					Request:                  allocatedClaim.Spec.Devices.Requests[0].Name,
+					Driver:                   driver3,
+					Pool:                     poolWithBinding3,
+					Device:                   "with-binding-3",
+					BindingConditions:        []string{bindingCondition},
+					BindingFailureConditions: []string{failureCondition},
+				}},
+			}),
+		}),
+		)), "Claim must be allocated to the condition-gated device")
+
+	tStart := time.Now()
+	// The scheduler should hit the binding timeout and surface that on the pod.
+	// We poll the pod's conditions until we see a message containing "binding timeout".
+	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *v1.Pod {
+		p, err := tCtx.Client().CoreV1().Pods(namespace3).Get(tCtx, pod.Name, metav1.GetOptions{})
+		tCtx.ExpectNoError(err, "get pod")
+		return p
+	}).WithTimeout(maxTO*time.Second).WithPolling(300*time.Millisecond).Should(
+		gomega.WithTransform(func(p *v1.Pod) bool {
+			for _, c := range p.Status.Conditions {
+				// Reason may be "SchedulerError", but the message should include "binding timeout".
+				tCtx.Logf("pod.Status.Conditions.Message: %s", c.Message)
+				if strings.Contains(strings.ToLower(c.Message), "binding timeout") {
+					return true
+				}
+			}
+			return false
+		}, gomega.BeTrue()),
+		"pod should report binding timeout in a condition message",
+	)
+	elapsed := time.Since(tStart)
+	gomega.NewWithT(tCtx).Expect(elapsed).To(
+		gomega.SatisfyAll(
+			gomega.BeNumerically(">=", minTO),
+			gomega.BeNumerically("<=", maxTO),
+		),
+		fmt.Sprintf("bindingTimeout(%v) should trigger roughly near %s (observed %v)", wantTO, wantTO.String(), elapsed),
+	)
+	// Verify that the pod remains unscheduled after the binding timeout.
+	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) bool {
+		p, err := tCtx.Client().CoreV1().Pods(namespace3).Get(tCtx, pod.Name, metav1.GetOptions{})
+		tCtx.ExpectNoError(err, "get pod")
+		if p.Spec.NodeName != "" {
+			return false
+		}
+		for _, c := range p.Status.Conditions {
+			if c.Type == v1.PodScheduled && c.Status == v1.ConditionTrue {
+				return false
+			}
+		}
+		return true
+	}).WithTimeout(wantTO*time.Second).WithPolling(200*time.Millisecond).Should(gomega.BeTrue(),
+		"pod must remain unscheduled after binding timeout")
+
+	// Verifies that when a device with BindingConditions
+	// fails to become ready within the timeout (BindingTimeout enforced), and a new device without
+	// binding conditions is added, the scheduler reschedules the claim to the new available device.
+
+	// Initial slice: one device that *requires* a binding condition that never becomes true.
+	namespace4 := createTestNamespace(tCtx, nil)
+	class4, driverName4 := createTestClass(tCtx, namespace4)
+	poolWithBinding4 := nodeName + "-with-binding-4"
+	poolWithoutBinding4 := nodeName + "-without-binding-4"
+	slice4 := &resourceapi.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: namespace4 + "-",
+		},
+		Spec: resourceapi.ResourceSliceSpec{
+			NodeName: &nodeName,
+			Pool: resourceapi.ResourcePool{
+				Name:               poolWithBinding4,
+				ResourceSliceCount: 1,
+			},
+			Driver: driverName4,
+			Devices: []resourceapi.Device{{
+				Name:                     "with-binding-4",
+				BindingConditions:        []string{bindingCondition},
+				BindingFailureConditions: []string{failureCondition},
+			}},
+		},
+	}
+	slice4 = createSlice(tCtx, slice4)
+	claim5 := createClaim(tCtx, namespace4, "-timeout", class4, claim)
+	pod = createPod(tCtx, namespace4, "-timeout", claim5, podWithClaimName)
+
+	claim5 = waitForClaimAllocatedToDevice(tCtx, namespace4, claim5.Name, 10*time.Second)
+	gomega.NewWithT(tCtx).Expect(claim5).To(gomega.HaveField(
+		"Status.Allocation",
+		gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+			"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
+				Results: []resourceapi.DeviceRequestAllocationResult{{
+					Request:                  claim.Spec.Devices.Requests[0].Name,
+					Driver:                   driverName4,
+					Pool:                     poolWithBinding4,
+					Device:                   "with-binding-4",
+					BindingConditions:        []string{bindingCondition},
+					BindingFailureConditions: []string{failureCondition},
+				}},
+			}),
+		}),
+		)), "Expected allocation to the condition-gated device")
+
+	slice5 := &resourceapi.ResourceSlice{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: namespace4 + "-recovery-"},
+		Spec: resourceapi.ResourceSliceSpec{
+			NodeName: &nodeName,
+			Pool: resourceapi.ResourcePool{
+				Name:               poolWithoutBinding4,
+				ResourceSliceCount: 1,
+			},
+			Driver: driverName4,
+			Devices: []resourceapi.Device{{
+				Name: "without-binding-4",
+			}},
+		},
+	}
+	if !isBindingTimeout(tCtx, namespace4, pod.Name) {
+		slice5 = createSlice(tCtx, slice5)
+	}
+	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) bool {
+		if !isBindingTimeout(tCtx, namespace4, pod.Name) {
+			_, err := tCtx.Client().ResourceV1().ResourceSlices().Get(tCtx, slice5.Name, metav1.GetOptions{})
+			return !apierrors.IsNotFound(err)
+		}
+		return false
+	}).WithTimeout(3*time.Second).WithPolling(1*time.Second).Should(gomega.BeTrue(), "slice has been created before binding timeout")
+
+	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) bool {
+		return isBindingTimeout(tCtx, namespace4, pod.Name)
+	}).WithTimeout(20*time.Second).WithPolling(300*time.Millisecond).Should(gomega.BeTrue(),
+		"pod should report binding timeout before reallocation")
+
+	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
+		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace4).Get(tCtx, claim5.Name, metav1.GetOptions{})
+		tCtx.ExpectNoError(err)
+		return c
+	}).WithTimeout(10*time.Second).WithPolling(1*time.Second).Should(gomega.HaveField(
+		"Status.Allocation",
+		gstruct.PointTo(gstruct.MatchFields(gstruct.IgnoreExtras, gstruct.Fields{
+			"Devices": gomega.Equal(resourceapi.DeviceAllocationResult{
+				Results: []resourceapi.DeviceRequestAllocationResult{{
+					Request: claim.Spec.Devices.Requests[0].Name,
+					Driver:  driverName4,
+					Pool:    poolWithoutBinding4,
+					Device:  "without-binding-4",
+				}},
+			}),
+		}),
+		)), "Expected allocation to the device without binding conditions")
+
+	waitForPodScheduled(tCtx, namespace4, pod.Name)
 }
