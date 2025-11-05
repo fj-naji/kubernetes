@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	gtypes "github.com/onsi/gomega/types"
 
 	v1 "k8s.io/api/core/v1"
 	resourceapi "k8s.io/api/resource/v1"
@@ -189,48 +190,29 @@ func waitForNotFound[T any](tCtx ktesting.TContext, get func(context.Context, st
 	}).WithTimeout(60*time.Second).Should(gomega.MatchError(apierrors.IsNotFound, "IsNotFound"), "Object %T %s should have been removed.", t, name)
 }
 
-func waitForClaimAllocatedToDevice(tCtx ktesting.TContext, namespace, claimName string, timeout time.Duration) *resourceapi.ResourceClaim {
+func waitForClaim(tCtx ktesting.TContext, namespace, claimName string, timeout time.Duration, match gtypes.GomegaMatcher, description ...any) *resourceapi.ResourceClaim {
 	tCtx.Helper()
 	var latestClaim *resourceapi.ResourceClaim
 	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
 		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claimName, metav1.GetOptions{})
-		tCtx.ExpectNoError(err)
+		tCtx.ExpectNoError(err, "get claim")
 		latestClaim = c
 		return latestClaim
-	}).WithTimeout(timeout).WithPolling(time.Second).Should(gomega.HaveField("Status.Allocation", gomega.Not(gomega.BeNil())), "Claim should have been allocated.")
+	}).WithTimeout(timeout).WithPolling(time.Second).Should(match, description...)
 	return latestClaim
 }
 
-// Wait until the claim.status.Devices[0].Conditions become nil again after rescheduling.
-func waitDeviceConditionsBeNil(tCtx ktesting.TContext, namespace, claimName string, timeout time.Duration) {
-	tCtx.Helper()
-	setConditionsFlag := false
-	ktesting.Eventually(tCtx, func(tCtx ktesting.TContext) *resourceapi.ResourceClaim {
-		c, err := tCtx.Client().ResourceV1().ResourceClaims(namespace).Get(tCtx, claimName, metav1.GetOptions{})
-		tCtx.ExpectNoError(err, "get claim")
-		latestClaim := c
-		// Phase 1: saw conditions once
-		if latestClaim.Status.Devices != nil && len(latestClaim.Status.Devices[0].Conditions) != 0 {
-			setConditionsFlag = true
-		}
-		// Phase 2: after seeing conditions, wait until they are cleared.
-		if setConditionsFlag {
-			// conditions cleared?
-			if len(latestClaim.Status.Devices) == 0 {
-				return nil // done waiting
-			}
-		}
-		return latestClaim
-	}).WithTimeout(timeout).WithPolling(time.Second).Should(gomega.BeNil(), "claim should not have any condition")
+func waitForClaimAllocatedToDevice(tCtx ktesting.TContext, namespace, claimName string, timeout time.Duration,) *resourceapi.ResourceClaim {
+	return waitForClaim(tCtx, namespace, claimName, timeout,
+		gomega.HaveField("Status.Allocation", gomega.Not(gomega.BeNil())),
+		"Claim should have been allocated.",
+	)
 }
 
-func isBindingTimeout(tCtx ktesting.TContext, namespace, podName string) bool {
-	p, err := tCtx.Client().CoreV1().Pods(namespace).Get(tCtx, podName, metav1.GetOptions{})
-	if err == nil {
-		for _, c := range p.Status.Conditions {
-			if strings.Contains(strings.ToLower(c.Message), "binding timeout") {
-				return true
-			}
+func isBindingTimeout(p *v1.Pod) bool {
+	for _, c := range p.Status.Conditions {
+		if strings.Contains(strings.ToLower(c.Message), "binding timeout") {
+			return true
 		}
 	}
 	return false
