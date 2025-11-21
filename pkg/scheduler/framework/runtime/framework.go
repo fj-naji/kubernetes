@@ -814,7 +814,7 @@ func (f *frameworkImpl) SignPod(ctx context.Context, pod *v1.Pod, recordPluginSt
 	if recordPluginStats {
 		startTime := time.Now()
 		defer func() {
-			metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Sign, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+			metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Sign, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 		}()
 	}
 
@@ -864,7 +864,7 @@ func (f *frameworkImpl) RunPreFilterPlugins(ctx context.Context, state fwk.Cycle
 	skipPlugins := sets.New[string]()
 	defer func() {
 		state.SetSkipFilterPlugins(skipPlugins)
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreFilter, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreFilter, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	nodes, err := f.SnapshotSharedLister().NodeInfos().List()
 	if err != nil {
@@ -1080,7 +1080,7 @@ func (f *frameworkImpl) runFilterPlugin(ctx context.Context, pl fwk.FilterPlugin
 func (f *frameworkImpl) RunPostFilterPlugins(ctx context.Context, state fwk.CycleState, pod *v1.Pod, filteredNodeStatusMap fwk.NodeToStatusReader) (_ *fwk.PostFilterResult, status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PostFilter, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PostFilter, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 
 	logger := klog.FromContext(ctx)
@@ -1231,7 +1231,7 @@ func (f *frameworkImpl) RunPreScorePlugins(
 	skipPlugins := sets.New[string]()
 	defer func() {
 		state.SetSkipScorePlugins(skipPlugins)
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreScore, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreScore, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	logger := klog.FromContext(ctx)
 	verboseLogs := logger.V(4).Enabled()
@@ -1273,7 +1273,7 @@ func (f *frameworkImpl) runPreScorePlugin(ctx context.Context, pl fwk.PreScorePl
 func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodes []fwk.NodeInfo) (ns []fwk.NodePluginScores, status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Score, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Score, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	allNodePluginScores := make([]fwk.NodePluginScores, len(nodes))
 	numPlugins := len(f.scorePlugins)
@@ -1413,7 +1413,7 @@ func (f *frameworkImpl) StoreScheduleResults(ctx context.Context, signature fwk.
 func (f *frameworkImpl) RunPreBindPlugins(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) (status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreBind, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreBind, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	logger := klog.FromContext(ctx)
 	verboseLogs := logger.V(4).Enabled()
@@ -1464,7 +1464,7 @@ func (f *frameworkImpl) runPreBindPlugin(ctx context.Context, pl fwk.PreBindPlug
 func (f *frameworkImpl) RunPreBindPreFlights(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) (status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreBindPreFlight, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PreBindPreFlight, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	logger := klog.FromContext(ctx)
 	verboseLogs := logger.V(4).Enabled()
@@ -1514,7 +1514,7 @@ func (f *frameworkImpl) runPreBindPreFlight(ctx context.Context, pl fwk.PreBindP
 func (f *frameworkImpl) RunBindPlugins(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) (status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Bind, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Bind, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	if len(f.bindPlugins) == 0 {
 		return fwk.NewStatus(fwk.Skip, "")
@@ -1563,7 +1563,7 @@ func (f *frameworkImpl) runBindPlugin(ctx context.Context, bp fwk.BindPlugin, st
 func (f *frameworkImpl) RunPostBindPlugins(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PostBind, fwk.Success.String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.PostBind, fwk.Success.String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	logger := klog.FromContext(ctx)
 	verboseLogs := logger.V(4).Enabled()
@@ -1598,7 +1598,7 @@ func (f *frameworkImpl) runPostBindPlugin(ctx context.Context, pl fwk.PostBindPl
 func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) (status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Reserve, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Reserve, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	logger := klog.FromContext(ctx)
 	verboseLogs := logger.V(4).Enabled()
@@ -1642,7 +1642,7 @@ func (f *frameworkImpl) runReservePluginReserve(ctx context.Context, pl fwk.Rese
 func (f *frameworkImpl) RunReservePluginsUnreserve(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Unreserve, fwk.Success.String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Unreserve, fwk.Success.String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	// Execute the Unreserve operation of each reserve plugin in the
 	// *reverse* order in which the Reserve operation was executed.
@@ -1682,7 +1682,7 @@ func (f *frameworkImpl) runReservePluginUnreserve(ctx context.Context, pl fwk.Re
 func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, state fwk.CycleState, pod *v1.Pod, nodeName string) (status *fwk.Status) {
 	startTime := time.Now()
 	defer func() {
-		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Permit, status.Code().String(), f.profileName).Observe(metrics.SinceInSeconds(startTime))
+		metrics.FrameworkExtensionPointDuration.WithLabelValues(metrics.Permit, status.Code().String(), f.profileName, "false").Observe(metrics.SinceInSeconds(startTime))
 	}()
 	pluginsWaitTime := make(map[string]time.Duration)
 	statusCode := fwk.Success

@@ -3605,7 +3605,7 @@ func collectAndComparePluginMetrics(t *testing.T, wantExtensionPoint, wantPlugin
 
 func collectAndCompareFrameworkMetrics(t *testing.T, wantExtensionPoint string, wantStatus fwk.Code) {
 	t.Helper()
-	m := metrics.FrameworkExtensionPointDuration.WithLabelValues(wantExtensionPoint, wantStatus.String(), testProfileName)
+	m := metrics.FrameworkExtensionPointDuration.WithLabelValues(wantExtensionPoint, wantStatus.String(), testProfileName, "false")
 
 	count, err := testutil.GetHistogramMetricCount(m)
 	if err != nil {
