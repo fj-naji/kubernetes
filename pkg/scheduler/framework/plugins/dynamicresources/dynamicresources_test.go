@@ -3713,3 +3713,228 @@ func TestNormalizeScore(t *testing.T) {
 		})
 	}
 }
+
+func qualifiedNamesToStrings(in []resourceapi.QualifiedName) []string {
+	out := make([]string, len(in))
+	for i, q := range in {
+		out[i] = string(q)
+	}
+	return out
+}
+
+func TestIsClaimReadyForBinding(t *testing.T) {
+	const (
+		driver   = "some-driver"
+		pool     = "worker"
+		deviceID = "instance-1"
+	)
+
+	type tc struct {
+		name      string
+		claim     *resourceapi.ResourceClaim
+		wantReady bool
+		wantErr   bool
+		// optional extra checks (for side-effects like failedDevices)
+		check func(t *testing.T, pl *DynamicResources, ready bool, err error)
+	}
+
+	tests := []tc{
+		{
+			name: "no-allocation",
+			claim: &resourceapi.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-claim",
+					Namespace: "default",
+				},
+			},
+			wantReady: false,
+			wantErr:   false,
+		},
+		{
+			name: "pending-conditions-device-status-missing",
+			claim: &resourceapi.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-claim",
+					Namespace: "default",
+				},
+				Status: resourceapi.ResourceClaimStatus{
+					Allocation: &resourceapi.AllocationResult{
+						Devices: resourceapi.DeviceAllocationResult{
+							Results: []resourceapi.DeviceRequestAllocationResult{
+								{
+									Request:           "req-1",
+									Driver:            driver,
+									Pool:              pool,
+									Device:            deviceID,
+									BindingConditions: qualifiedNamesToStrings([]resourceapi.QualifiedName{"condition"}),
+								},
+							},
+						},
+					},
+					Devices: nil,
+				},
+			},
+			wantReady: false,
+			wantErr:   false,
+		},
+		{
+			name: "all-conditions-succeeded",
+			claim: &resourceapi.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-claim",
+					Namespace: "default",
+				},
+				Status: resourceapi.ResourceClaimStatus{
+					Allocation: &resourceapi.AllocationResult{
+						Devices: resourceapi.DeviceAllocationResult{
+							Results: []resourceapi.DeviceRequestAllocationResult{
+								{
+									Request:           "req-1",
+									Driver:            driver,
+									Pool:              pool,
+									Device:            deviceID,
+									BindingConditions: qualifiedNamesToStrings([]resourceapi.QualifiedName{"condition"}),
+								},
+							},
+						},
+					},
+					Devices: []resourceapi.AllocatedDeviceStatus{
+						{
+							Driver: driver,
+							Pool:   pool,
+							Device: deviceID,
+							Conditions: []metav1.Condition{
+								{
+									Type:   "condition",
+									Status: metav1.ConditionTrue,
+								},
+							},
+						},
+					},
+				},
+			},
+			wantReady: true,
+			wantErr:   false,
+		},
+		{
+			name: "failure-with-retry-policy",
+			claim: &resourceapi.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-claim",
+					Namespace: "default",
+				},
+				Status: resourceapi.ResourceClaimStatus{
+					Allocation: &resourceapi.AllocationResult{
+						Devices: resourceapi.DeviceAllocationResult{
+							Results: []resourceapi.DeviceRequestAllocationResult{
+								{
+									Request: "req-1",
+									Driver:  driver,
+									Pool:    pool,
+									Device:  deviceID,
+									// Need a binding condition so we don't early-continue.
+									BindingConditions:        qualifiedNamesToStrings([]resourceapi.QualifiedName{"condition"}),
+									BindingFailureConditions: qualifiedNamesToStrings([]resourceapi.QualifiedName{"failed"}),
+								},
+							},
+						},
+					},
+					Devices: []resourceapi.AllocatedDeviceStatus{
+						{
+							Driver: driver,
+							Pool:   pool,
+							Device: deviceID,
+							Conditions: []metav1.Condition{
+								{
+									Type:    "failed",
+									Status:  metav1.ConditionTrue,
+									Reason:  string(failurePolicyRetry),
+									Message: "retry this allocation",
+								},
+							},
+						},
+					},
+				},
+			},
+			wantReady: false,
+			wantErr:   true,
+			check: func(t *testing.T, _ *DynamicResources, _ bool, err error) {
+				require.Contains(t, err.Error(), "claim my-claim binding failed")
+				require.Contains(t, err.Error(), "reason="+string(failurePolicyRetry))
+				require.Contains(t, err.Error(), `message="retry this allocation"`)
+			},
+		},
+		{
+			name: "failure-with-avoid-policy-marks-failed-devices",
+			claim: &resourceapi.ResourceClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "my-claim",
+					Namespace: "default",
+					UID:       "uid-1234",
+				},
+				Status: resourceapi.ResourceClaimStatus{
+					Allocation: &resourceapi.AllocationResult{
+						Devices: resourceapi.DeviceAllocationResult{
+							Results: []resourceapi.DeviceRequestAllocationResult{
+								{
+									Request:                  "req-1",
+									Driver:                   driver,
+									Pool:                     pool,
+									Device:                   deviceID,
+									BindingConditions:        qualifiedNamesToStrings([]resourceapi.QualifiedName{"condition"}),
+									BindingFailureConditions: qualifiedNamesToStrings([]resourceapi.QualifiedName{"failed"}),
+								},
+							},
+						},
+					},
+					Devices: []resourceapi.AllocatedDeviceStatus{
+						{
+							Driver: driver,
+							Pool:   pool,
+							Device: deviceID,
+							Conditions: []metav1.Condition{
+								{
+									Type:   "failed",
+									Status: metav1.ConditionTrue,
+									Reason: string(failurePolicyAvoid),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantReady: false,
+			wantErr:   true,
+			check: func(t *testing.T, pl *DynamicResources, _ bool, _ error) {
+				require.NotNil(t, pl.failedDevices, "failedDevices must be initialized")
+				deviceMap, ok := pl.failedDevices["uid-1234"]
+				require.True(t, ok, "failedDevices must have an entry for the claim UID")
+
+				key := fmt.Sprintf("%s/%s/%s", driver, pool, deviceID)
+				_, exists := deviceMap[key]
+				require.Truef(t, exists, "failedDevices must contain key %q for avoid policy", key)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt // capture
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			pl := &DynamicResources{}
+			ready, err := pl.isClaimReadyForBinding(tt.claim)
+
+			if tt.wantErr {
+				require.Error(t, err, "expected error, got nil")
+			} else {
+				require.NoError(t, err, "did not expect error, got one")
+			}
+			require.Equal(t, tt.wantReady, ready, "unexpected readiness result")
+
+			if tt.check != nil {
+				tt.check(t, pl, ready, err)
+			}
+		})
+	}
+}
