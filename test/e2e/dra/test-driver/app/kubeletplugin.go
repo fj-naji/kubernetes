@@ -225,6 +225,9 @@ func StartPlugin(ctx context.Context, cdiDir, driverName string, kubeClient kube
 		}
 	}
 
+	// Start background controller that drives BindingConditions based on "scenario" parameter.
+	go ex.runBindingPolicyController(ctx)
+
 	return ex, nil
 }
 
@@ -325,7 +328,6 @@ func (ex *ExamplePlugin) nodePrepareResource(ctx context.Context, claim *resourc
 		// Idempotent call, nothing to do.
 		return result, nil
 	}
-
 	var devices []kubeletplugin.Device
 	for _, result := range claim.Status.Allocation.Devices.Results {
 		// Only handle allocations for the current driver.
@@ -684,4 +686,81 @@ func (ex *ExamplePlugin) sendHealthUpdate(srv drahealthv1alpha1.DRAResourceHealt
 	resp := &drahealthv1alpha1.NodeWatchResourcesResponse{Devices: healthUpdates}
 	logger.V(5).Info("Test driver sending health update", "response", resp)
 	return srv.Send(resp)
+}
+
+// runBindingPolicyController periodically reconciles BindingConditions on
+// ResourceClaims that use this driver.
+func (ex *ExamplePlugin) runBindingPolicyController(ctx context.Context) {
+	logger := klog.FromContext(ctx)
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	logger.V(3).Info("Starting BindingPolicy controller loop")
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.V(2).Info("Stopping BindingPolicy controller loop")
+			return
+		case <-ticker.C:
+			if err := ex.reconcileBindingPolicies(ctx); err != nil {
+				logger.Error(err, "BindingPolicy reconcile failed")
+			}
+		}
+	}
+}
+
+// reconcileBindingPolicies lists ResourceClaims and, for those that are
+// allocated but have no status.devices yet, applies the scenario policy and
+// updates status.
+func (ex *ExamplePlugin) reconcileBindingPolicies(ctx context.Context) error {
+	// List all claims in all namespaces – this is only used in e2e tests.
+	claims, err := ex.resourceClient.ResourceClaims(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fmt.Errorf("list ResourceClaims: %w", err)
+	}
+
+	for i := range claims.Items {
+		claim := &claims.Items[i]
+
+		// We only care about claims that have an allocation.
+		if claim.Status.Allocation == nil {
+			continue
+		}
+
+		// Skip claims that already have per-device status.
+		if len(claim.Status.Devices) > 0 {
+			continue
+		}
+
+		// Optionally: only process claims that are for our driver.
+		// This check is cheap: if no config at all, skip.
+		// Optionally: only process claims that actually allocate our driver.
+		hasOurDriver := false
+		if claim.Status.Allocation != nil {
+			for _, res := range claim.Status.Allocation.Devices.Results {
+				if res.Driver == ex.driverName {
+					hasOurDriver = true
+					break
+				}
+			}
+		}
+		if !hasOurDriver {
+			continue
+		}
+
+		// Apply scenario → sets status.devices[*].conditions.
+		applyBindingScenario(claim)
+
+		if len(claim.Status.Devices) == 0 {
+			// Scenario "timeout" does nothing; no update needed.
+			continue
+		}
+
+		if _, err := ex.UpdateStatus(ctx, claim); err != nil {
+			ex.logger.Error(err, "failed to update ResourceClaim status with BindingConditions", "claim", claim.Name, "namespace", claim.Namespace)
+		}
+	}
+
+	return nil
 }

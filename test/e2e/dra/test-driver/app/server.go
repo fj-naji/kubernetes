@@ -48,6 +48,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 )
 
 // NewCommand creates a *cobra.Command object with default parameters.
@@ -185,7 +186,7 @@ func NewCommand() *cobra.Command {
 	fs = kubeletPluginFlagSets.FlagSet("CDI")
 	cdiDir := fs.String("cdi-dir", "/var/run/cdi", "directory for dynamically created CDI JSON files")
 	nodeName := fs.String("node-name", "", "name of the node that the kubelet plugin is responsible for")
-	numDevices := fs.Int("num-devices", 4, "number of devices to simulate per node")
+	numDevices := fs.Int("num-devices", 8, "number of devices to simulate per node")
 	fs = kubeletPlugin.Flags()
 	for _, f := range kubeletPluginFlagSets.FlagSets {
 		fs.AddFlagSet(f)
@@ -206,11 +207,78 @@ func NewCommand() *cobra.Command {
 			return errors.New("--node-name not set")
 		}
 
-		devices := make([]resourceapi.Device, *numDevices)
+		modeAttrName := resourceapi.QualifiedName("test-driver.cdi.k8s.io/mode")
+		scenarioAttrName := resourceapi.QualifiedName("test-driver.cdi.k8s.io/scenario")
+		devices := make([]resourceapi.Device, 0, *numDevices)
+
 		for i := 0; i < *numDevices; i++ {
-			devices[i] = resourceapi.Device{
-				Name: fmt.Sprintf("device-%02d", i),
+			// All devices use BindingConditions except indices 1 and 3.
+			usesBC := i != 1 && i != 3
+
+			var (
+				modeValue           string
+				scenarioVal         string
+				bindingConds        []string
+				bindingFailureConds []string
+			)
+
+			if usesBC {
+				modeValue = "with-bc"
+
+				// All BC devices share the same binding + failure condition names.
+				// Scheduler interprets the *Reason* on failure conditions as the policy.
+				bindingConds = []string{"FabricDeviceReady"}
+				bindingFailureConds = []string{"FabricDeviceReschedule", "FabricDeviceFailed"}
+
+				// Scenario decides *how* the driver will drive those conditions later.
+				//
+				// We assume at least 6 devices so that BC devices exist at indices
+				// 0, 2 and 4:
+				//   - i == 0: timeout      → never sets FabricDeviceReady nor failure cond
+				//   - i == 2: retry        → sets FabricDeviceReschedule with
+				//                            Reason="DRAFailurePolicyRetried"
+				//   - i == 4: avoid        → sets FabricDeviceFailed with
+				//                            Reason="DRAFailurePolicyAvoided"
+				//   - i == 5: reconsider   → sets FabricDeviceFailed with
+				//                            Reason="DRAFailurePolicyReconsidered"
+				//   - others: normal       → eventually set FabricDeviceReady=True
+				switch i {
+				case 0:
+					scenarioVal = "timeout"
+				case 2:
+					scenarioVal = "retry"
+				case 4:
+					scenarioVal = "avoid"
+				case 5:
+					scenarioVal = "reconsider"
+				default:
+					scenarioVal = "normal"
+				}
+			} else {
+				// Non-BC devices: no binding conditions, no failure conditions.
+				modeValue = "no-bc"
+				scenarioVal = "normal"
 			}
+
+			modeStr := modeValue
+			scenarioStr := scenarioVal
+
+			dev := resourceapi.Device{
+				Name: fmt.Sprintf("device-%02d", i),
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					modeAttrName: {
+						StringValue: &modeStr,
+					},
+					scenarioAttrName: {
+						StringValue: &scenarioStr,
+					},
+				},
+				BindsToNode:              ptr.To(true),
+				BindingConditions:        bindingConds,
+				BindingFailureConditions: bindingFailureConds,
+			}
+
+			devices = append(devices, dev)
 		}
 		driverResources := resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{

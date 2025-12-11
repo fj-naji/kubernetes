@@ -1095,6 +1095,37 @@ EOF
 function start_kubescheduler {
     SCHEDULER_LOG=${LOG_DIR}/kube-scheduler.log
 
+    if [[ -n "${KUBE_SCHEDULER_CONFIG:-}" ]]; then
+      echo "[custom] Using custom kube-scheduler config: ${KUBE_SCHEDULER_CONFIG}"
+      CONFIG_PATH="${KUBE_SCHEDULER_CONFIG}"
+    else
+      cat <<EOF > "${TMP_DIR}"/kube-scheduler.yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: ${CERT_DIR}/scheduler.kubeconfig
+leaderElection:
+  leaderElect: ${LEADER_ELECT}
+EOF
+      CONFIG_PATH="${TMP_DIR}/kube-scheduler.yaml"
+    fi
+
+    run kube-scheduler "${SCHEDULER_LOG}" ${CONTROLPLANE_SUDO} "${GO_OUT}/kube-scheduler" \
+      --v="${LOG_LEVEL}" \
+      --config="${CONFIG_PATH}" \
+      --feature-gates="${FEATURE_GATES}" \
+      --emulated-version="${EMULATED_VERSION}" \
+      --authentication-kubeconfig "${CERT_DIR}"/scheduler.kubeconfig \
+      --authorization-kubeconfig "${CERT_DIR}"/scheduler.kubeconfig \
+      --secure-port="${SCHEDULER_SECURE_PORT}" \
+      --bind-address="${API_BIND_ADDR}" \
+      --master="https://${API_HOST}:${API_SECURE_PORT}" &
+    SCHEDULER_PID=$!
+}
+
+function start_kubescheduler {
+    SCHEDULER_LOG=${LOG_DIR}/kube-scheduler.log
+
     cat <<EOF > "${TMP_DIR}"/kube-scheduler.yaml
 apiVersion: kubescheduler.config.k8s.io/v1
 kind: KubeSchedulerConfiguration
