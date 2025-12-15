@@ -144,7 +144,19 @@ type DynamicResources struct {
 	clientset      kubernetes.Interface
 	celCache       *cel.Cache
 	draManager     fwk.SharedDRAManager
+
+	// NEW: remembered binding-failed devices per claim (used for "avoid" policy).
+	failedDevices map[types.UID]map[string]struct{}
 }
+
+// bindingFailurePolicy describes how the scheduler should behave after a binding failure.
+type bindingFailurePolicy string
+
+const (
+	failurePolicyReconsider bindingFailurePolicy = "DRAFailurePolicyReconsidered"
+	failurePolicyRetry      bindingFailurePolicy = "DRAFailurePolicyRetried"
+	failurePolicyAvoid      bindingFailurePolicy = "DRAFailurePolicyAvoided"
+)
 
 // New initializes a new plugin and returns it.
 func New(ctx context.Context, plArgs runtime.Object, fh fwk.Handle, fts feature.Features) (fwk.Plugin, error) {
@@ -711,6 +723,29 @@ func (pl *DynamicResources) Filter(ctx context.Context, cs fwk.CycleState, pod *
 			// the error, then later raise it again later if needed).
 			return statusError(logger, err, "pod", klog.KObj(pod), "node", klog.KObj(node), "resourceclaims", klog.KObjSlice(claimsToAllocate))
 		}
+
+		// Reject allocations that reuse avoided devices for this claim on this node.
+		if len(pl.failedDevices) > 0 {
+			for i, claim := range claimsToAllocate {
+				// If extended-resource special-claim templating is involved, normalize here:
+				if claim == extendedResourceClaim && nodeExtendedResourceClaim != nil {
+					claim = nodeExtendedResourceClaim
+				}
+
+				allocRes := a[i]
+				for _, req := range allocRes.Devices.Results {
+					if pl.isDeviceAvoidedForClaim(claim, req) {
+						return statusUnschedulable(
+							logger,
+							"allocation uses avoided device for this claim on this node",
+							"pod", klog.KObj(pod),
+							"node", klog.KObj(node),
+							"resourceclaim", klog.KObj(claim),
+						)
+					}
+				}
+			}
+		}
 		// Check for exact length just to be sure. In practice this is all-or-nothing.
 		if len(a) != len(claimsToAllocate) {
 			return statusUnschedulable(logger, "cannot allocate all claims", "pod", klog.KObj(pod), "node", klog.KObj(node), "resourceclaims", klog.KObjSlice(claimsToAllocate))
@@ -1077,10 +1112,53 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			err = errors.New("device binding timeout")
+			return statusError(logger, err)
 		}
-		// Returning an error here causes another scheduling attempt.
-		// In that next attempt, PreFilter will detect the timeout or
-		// error and try to recover.
+
+		//NEW: policy-specific behavior when a BindingFailureCondition was set.
+		// isClaimReadyForBinding should return errors like:
+		//   "claim X binding failed: policy=DRAFailurePolicyRetried, reason=..., message=..."
+		msg := err.Error()
+
+		// retry >> requeue pod, keep allocation; controller/driver decides whether
+		// to keep or adjust the allocation.
+		if strings.Contains(msg, "policy="+string(failurePolicyRetry)) {
+			pl.fh.EventRecorder().Eventf(
+				pod,
+				nil,
+				v1.EventTypeWarning,
+				"DRADeviceBindingRetry",
+				"BindingFailure",
+				"DRA device binding failed with retry policy; will retry same device in next scheduling cycle: %v",
+				err,
+			)
+			return fwk.NewStatus(
+				fwk.Unschedulable,
+				"DRA: binding failed with retry policy; retrying same device in next scheduling cycle",
+			)
+		}
+
+		// avoid >> requeue pod; allocator can use pl.failedDevices (populated
+		// in isClaimReadyForBinding) to de-prioritize this device.
+		if strings.Contains(msg, "policy="+string(failurePolicyAvoid)) {
+			pl.fh.EventRecorder().Eventf(
+				pod,
+				nil,
+				v1.EventTypeWarning,
+				"DRADeviceBindingAvoid",
+				"BindingFailure",
+				"DRA device binding failed with avoid policy; will de-prioritize failed device on reallocation: %v",
+				err,
+			)
+			return fwk.NewStatus(
+				fwk.Unschedulable,
+				"DRA: binding failed with avoid policy; will avoid failed device when possible on reallocation",
+			)
+		}
+
+		// Default: includes:
+		//    - "claim <name> binding timeout" coming from isClaimTimeout(...)
+		//    - any other errors from isPodReadyForBinding.
 		return statusError(logger, err)
 	}
 
@@ -1260,8 +1338,26 @@ func (pl *DynamicResources) isClaimReadyForBinding(claim *resourceapi.ResourceCl
 		for _, cond := range deviceRequest.BindingFailureConditions {
 			failedCond := apimeta.FindStatusCondition(deviceStatus.Conditions, cond)
 			if failedCond != nil && failedCond.Status == metav1.ConditionTrue {
-				return false, fmt.Errorf("claim %s binding failed: reason=%s, message=%q",
+				policy := failurePolicyReconsider
+				switch failedCond.Reason {
+				case string(failurePolicyRetry):
+					policy = failurePolicyRetry
+				case string(failurePolicyAvoid):
+					policy = failurePolicyAvoid
+				case "", string(failurePolicyReconsider):
+				default:
+					// unknown reason → treat as reconsider
+					policy = failurePolicyReconsider
+				}
+				if policy == failurePolicyAvoid {
+					pl.markFailedDevicesForClaim(
+						claim,
+						[]resourceapi.AllocatedDeviceStatus{*deviceStatus},
+					)
+				}
+				return false, fmt.Errorf("claim %s binding failed: policy=%s, reason=%s, message=%q",
 					claim.Name,
+					policy,
 					failedCond.Reason,
 					failedCond.Message)
 			}
@@ -1374,4 +1470,44 @@ func getAllocatedDeviceStatus(claim *resourceapi.ResourceClaim, deviceRequest *r
 		}
 	}
 	return nil
+}
+
+func getDeviceKey(driver, pool, device string) string {
+	return fmt.Sprintf("%s/%s/%s", driver, pool, device)
+}
+
+func (pl *DynamicResources) markFailedDevicesForClaim(
+	claim *resourceapi.ResourceClaim,
+	devs []resourceapi.AllocatedDeviceStatus,
+) {
+	if pl.failedDevices == nil {
+		pl.failedDevices = make(map[types.UID]map[string]struct{})
+	}
+	m, ok := pl.failedDevices[claim.UID]
+	if !ok {
+		m = make(map[string]struct{})
+		pl.failedDevices[claim.UID] = m
+	}
+	for _, d := range devs {
+		deviceKey := getDeviceKey(d.Driver, d.Pool, d.Device)
+		m[deviceKey] = struct{}{}
+	}
+}
+
+func (pl *DynamicResources) isDeviceAvoidedForClaim(
+	claim *resourceapi.ResourceClaim,
+	req resourceapi.DeviceRequestAllocationResult,
+) bool {
+	if pl.failedDevices == nil {
+		return false
+	}
+
+	devicesForClaim, ok := pl.failedDevices[claim.UID]
+	if !ok {
+		return false
+	}
+
+	key := getDeviceKey(req.Driver, req.Pool, req.Device)
+	_, exists := devicesForClaim[key]
+	return exists
 }
