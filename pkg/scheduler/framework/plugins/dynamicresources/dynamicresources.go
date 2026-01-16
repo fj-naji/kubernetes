@@ -50,6 +50,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/feature"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
+	schedmetrics "k8s.io/kubernetes/pkg/scheduler/metrics"
 	schedutil "k8s.io/kubernetes/pkg/scheduler/util"
 	"k8s.io/utils/ptr"
 )
@@ -1043,10 +1044,49 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 
 	logger := klog.FromContext(ctx)
 
+	// Metrics: track PreBind duration and BindingConditions outcome.
+	// Only emit metrics when the DBC feature gate is on.
+	dbcEnabled := pl.fts.EnableDRADeviceBindingConditions && pl.fts.EnableDRAResourceClaimDeviceStatus
+
+	// Detect up front whether any claim uses BindingConditions.
+	// This is used both for control-flow (waiting) and for metrics labeling.
+	var (
+		hasBCForWait    = false               // at least one claim has BindingConditions
+		requiresBCLabel = "false"             // "true" once we know BindingConditions are required
+		statusLabel     = "success"           // "timeout" or "error" for failure paths
+		profileLabel    = pl.fh.ProfileName() // scheduler profile name
+		start           = time.Now()
+	)
+
+	if dbcEnabled {
+		defer func() {
+			duration := time.Since(start).Seconds()
+			driverLabel := metricDriverLabel(state)
+			requiresBC := hasBindingConditions(state)
+			if requiresBC {
+				requiresBCLabel = "true"
+			}
+			// Reuse framework extension point histogram
+			schedmetrics.FrameworkExtensionPointDuration.
+				WithLabelValues("PreBind", statusLabel, profileLabel, requiresBCLabel).
+				Observe(duration)
+
+			// DRA-specific counters
+			if requiresBC {
+				schedmetrics.DRABindingConditionsAllocationsTotal.
+					WithLabelValues(driverLabel, profileLabel, statusLabel).
+					Inc()
+			}
+		}()
+	}
+
 	for index, claim := range state.claims.all() {
 		if !resourceclaim.IsReservedForPod(pod, claim) {
 			claim, err := pl.bindClaim(ctx, state, index, pod, nodeName)
 			if err != nil {
+				if dbcEnabled {
+					statusLabel = "error"
+				}
 				return statusError(logger, err)
 			}
 			// Updated here such that Unreserve can work with patched claim.
@@ -1054,17 +1094,15 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 		}
 	}
 
-	if !pl.fts.EnableDRADeviceBindingConditions || !pl.fts.EnableDRAResourceClaimDeviceStatus {
+	if !dbcEnabled {
 		// If we don't have binding conditions, we can return early.
 		// The claim is now reserved for the pod and the scheduler can proceed with binding.
 		return nil
 	}
 
-	// We need to check if the device is attached to the node.
-	needToWait := hasBindingConditions(state)
-
-	// If no device needs to be prepared, we can return early.
-	if !needToWait {
+	// If no device needs to be prepared (no BindingConditions), we can return early.
+	hasBCForWait = hasBindingConditions(state)
+	if !hasBCForWait {
 		return nil
 	}
 
@@ -1075,6 +1113,14 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 			return pl.isPodReadyForBinding(state)
 		})
 	if err != nil {
+		if dbcEnabled {
+			if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "binding timeout") {
+				statusLabel = "timeout"
+			} else {
+				statusLabel = "error"
+			}
+		}
+
 		if errors.Is(err, context.DeadlineExceeded) {
 			err = errors.New("device binding timeout")
 		}
@@ -1322,6 +1368,33 @@ func (pl *DynamicResources) isPodReadyForBinding(state *stateData) (bool, error)
 		}
 	}
 	return true, nil
+}
+
+// metricDriverLabel derives a single driver label from all allocated devices
+// in the current state. For multiple different drivers it returns "mixed".
+// If no driver can be determined it returns "unknown".
+func metricDriverLabel(state *stateData) string {
+	drivers := sets.New[string]()
+	for _, claim := range state.claims.all() {
+		if claim.Status.Allocation == nil {
+			continue
+		}
+		for _, res := range claim.Status.Allocation.Devices.Results {
+			if res.Driver != "" {
+				drivers.Insert(res.Driver)
+			}
+		}
+	}
+
+	switch drivers.Len() {
+	case 0:
+		return "unknown"
+	case 1:
+		for d := range drivers {
+			return d
+		}
+	}
+	return "mixed"
 }
 
 // hasBindingConditions checks whether any of the claims in the state

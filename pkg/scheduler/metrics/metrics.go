@@ -155,6 +155,9 @@ var (
 	// The below is only available when the DRAExtendedResource feature gate is enabled.
 	ResourceClaimCreatesTotal *metrics.CounterVec
 
+	// The below are only available when the DRADeviceBindingConditions feature gate is enabled.
+	DRABindingConditionsAllocationsTotal *metrics.CounterVec
+
 	// metricsList is a list of all metrics that should be registered always, regardless of any feature gate's value.
 	metricsList []metrics.Registerable
 )
@@ -184,6 +187,11 @@ func Register() {
 		}
 		if utilfeature.DefaultFeatureGate.Enabled(features.DRAExtendedResource) {
 			RegisterMetrics(ResourceClaimCreatesTotal)
+		}
+		if utilfeature.DefaultFeatureGate.Enabled(features.DRADeviceBindingConditions) {
+			RegisterMetrics(
+				DRABindingConditionsAllocationsTotal,
+			)
 		}
 	})
 }
@@ -305,7 +313,7 @@ func InitMetrics() {
 			Buckets:        metrics.ExponentialBuckets(0.0001, 2, 12),
 			StabilityLevel: metrics.STABLE,
 		},
-		[]string{"extension_point", "status", "profile"})
+		[]string{"extension_point", "status", "profile", "requires_bindingconditions"})
 
 	PluginExecutionDuration = metrics.NewHistogramVec(
 		&metrics.HistogramOpts{
@@ -430,6 +438,16 @@ func InitMetrics() {
 			StabilityLevel: metrics.ALPHA,
 		},
 		[]string{"status"})
+
+	DRABindingConditionsAllocationsTotal = metrics.NewCounterVec(
+		&metrics.CounterOpts{
+			Subsystem:      SchedulerSubsystem,
+			Name:           "dra_bindingconditions_allocations_total",
+			Help:           "Number of scheduling attempts that successfully used devices with BindingConditions",
+			StabilityLevel: metrics.ALPHA,
+		},
+		[]string{"driver", "profile", "status"},
+	)
 
 	GetNodeHintDuration = metrics.NewHistogramVec(
 		&metrics.HistogramOpts{

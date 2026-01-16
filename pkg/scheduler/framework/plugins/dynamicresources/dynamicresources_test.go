@@ -2046,6 +2046,37 @@ func TestPlugin(t *testing.T) {
 					status: nil,
 				},
 			},
+			metrics: func(t *testing.T, g compbasemetrics.Gatherer) {
+				// Counter: allocations_total should have exactly one event
+				allocs, err := testutil.GetCounterValuesFromGatherer(
+					g,
+					"scheduler_dra_bindingconditions_allocations_total",
+					map[string]string{
+						"status": "success",
+					},
+					"driver", // group by driver label
+				)
+				require.NoError(t, err)
+
+				var totalAllocs float64
+				for _, v := range allocs {
+					totalAllocs += v
+				}
+				require.Equal(t, float64(1), totalAllocs, "expected exactly one successful allocation with BindingConditions")
+
+				// Histogram: one success sample with requires_bindingconditions=true
+				hist, err := testutil.GetHistogramVecFromGatherer(
+					g,
+					"scheduler_framework_extension_point_duration_seconds",
+					map[string]string{
+						"extension_point":            "PreBind",
+						"requires_bindingconditions": "true",
+						"status":                     "success",
+					},
+				)
+				require.NoError(t, err)
+				require.Equal(t, uint64(1), hist.GetAggregatedSampleCount(), "expected one success sample in PreBind duration histogram")
+			},
 		},
 		"bound-claim-with-failed-binding": {
 			enableDRADeviceBindingConditions:   true,
@@ -2156,6 +2187,37 @@ func TestPlugin(t *testing.T) {
 					status: fwk.AsStatus(errors.New("claim " + claim.Name + " binding timeout")),
 				},
 			},
+			metrics: func(t *testing.T, g compbasemetrics.Gatherer) {
+				// Counter: timeouts_total should have exactly one event
+				timeouts, err := testutil.GetCounterValuesFromGatherer(
+					g,
+					"scheduler_dra_bindingconditions_allocations_total",
+					map[string]string{
+						"status": "timeout",
+					},
+					"driver",
+				)
+				require.NoError(t, err)
+
+				var totalTimeouts float64
+				for _, v := range timeouts {
+					totalTimeouts += v
+				}
+				require.Equal(t, float64(1), totalTimeouts, "expected exactly one timeout with BindingConditions")
+
+				// Histogram: one timeout sample with requires_bindingconditions=true
+				hist, err := testutil.GetHistogramVecFromGatherer(
+					g,
+					"scheduler_framework_extension_point_duration_seconds",
+					map[string]string{
+						"extension_point":            "PreBind",
+						"requires_bindingconditions": "true",
+						"status":                     "timeout",
+					},
+				)
+				require.NoError(t, err)
+				require.Equal(t, uint64(1), hist.GetAggregatedSampleCount(), "expected one timeout sample in PreBind duration histogram")
+			},
 		},
 		"bound-claim-with-mixed-binding-conditions": {
 			enableDRADeviceBindingConditions:   true,
@@ -2220,6 +2282,20 @@ func TestPlugin(t *testing.T) {
 					},
 					status: nil,
 				},
+			},
+			metrics: func(t *testing.T, g compbasemetrics.Gatherer) {
+				// Only ensure we record a histogram sample for requires_bindingconditions=false.
+				hist, err := testutil.GetHistogramVecFromGatherer(
+					g,
+					"scheduler_framework_extension_point_duration_seconds",
+					map[string]string{
+						"extension_point":            "PreBind",
+						"requires_bindingconditions": "false",
+						"status":                     "success",
+					},
+				)
+				require.NoError(t, err)
+				require.Equal(t, uint64(1), hist.GetAggregatedSampleCount(), "expected one success sample without BindingConditions")
 			},
 		},
 		"multi-claims-binding-conditions-all-success": {
@@ -2626,6 +2702,14 @@ func setupMetrics(features feature.Features) compbasemetrics.KubeRegistry {
 	if features.EnableDRAExtendedResource {
 		testRegistry.MustRegister(metrics.ResourceClaimCreatesTotal)
 		metrics.ResourceClaimCreatesTotal.Reset()
+	}
+	// DRA DeviceBindingConditions metrics.
+	if features.EnableDRADeviceBindingConditions {
+		testRegistry.MustRegister(metrics.DRABindingConditionsAllocationsTotal)
+		testRegistry.MustRegister(metrics.FrameworkExtensionPointDuration)
+
+		metrics.DRABindingConditionsAllocationsTotal.Reset()
+		metrics.FrameworkExtensionPointDuration.Reset()
 	}
 	return testRegistry
 }
