@@ -27,7 +27,6 @@ import (
 	"os"
 	"os/signal"
 	"path"
-	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -48,6 +47,7 @@ import (
 	"k8s.io/dynamic-resource-allocation/kubeletplugin"
 	"k8s.io/dynamic-resource-allocation/resourceslice"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/ptr"
 )
 
 // NewCommand creates a *cobra.Command object with default parameters.
@@ -198,7 +198,7 @@ func NewCommand() *cobra.Command {
 			return fmt.Errorf("create CDI directory: %w", err)
 		}
 		datadir := path.Join(*kubeletPluginsDir, *driverName)
-		if err := os.MkdirAll(filepath.Dir(datadir), 0750); err != nil {
+		if err := os.MkdirAll(datadir, 0750); err != nil {
 			return fmt.Errorf("create socket directory: %w", err)
 		}
 
@@ -206,11 +206,65 @@ func NewCommand() *cobra.Command {
 			return errors.New("--node-name not set")
 		}
 
-		devices := make([]resourceapi.Device, *numDevices)
+		modeAttrName := resourceapi.QualifiedName(fmt.Sprintf("%s/mode", *driverName))
+		scenarioAttrName := resourceapi.QualifiedName(fmt.Sprintf("%s/scenario", *driverName))
+		devices := make([]resourceapi.Device, 0, *numDevices)
+
 		for i := 0; i < *numDevices; i++ {
-			devices[i] = resourceapi.Device{
-				Name: fmt.Sprintf("device-%02d", i),
+			// All devices use BindingConditions except indices 1 and 3.
+			usesBC := i != 1 && i != 3
+
+			var (
+				modeValue           string
+				scenarioVal         string
+				bindingConds        []string
+				bindingFailureConds []string
+			)
+
+			if usesBC {
+				modeValue = "with-bc"
+
+				// All BC devices share the same binding + failure condition names.
+				// Scheduler interprets the *Reason* on failure conditions as the policy.
+				bindingConds = []string{"FabricDeviceReady"}
+				bindingFailureConds = []string{"FabricDeviceReschedule", "FabricDeviceFailed"}
+				switch i {
+				case 0:
+					scenarioVal = "timeout"
+				case 2:
+					scenarioVal = "retry"
+				case 4:
+					scenarioVal = "avoid"
+				case 5:
+					scenarioVal = "reconsider"
+				default:
+					scenarioVal = "normal"
+				}
+			} else {
+				// Non-BC devices: no binding conditions, no failure conditions.
+				modeValue = "no-bc"
+				scenarioVal = "normal"
 			}
+
+			modeStr := modeValue
+			scenarioStr := scenarioVal
+
+			dev := resourceapi.Device{
+				Name: fmt.Sprintf("device-%02d", i),
+				Attributes: map[resourceapi.QualifiedName]resourceapi.DeviceAttribute{
+					modeAttrName: {
+						StringValue: &modeStr,
+					},
+					scenarioAttrName: {
+						StringValue: &scenarioStr,
+					},
+				},
+				BindsToNode:              ptr.To(true),
+				BindingConditions:        bindingConds,
+				BindingFailureConditions: bindingFailureConds,
+			}
+
+			devices = append(devices, dev)
 		}
 		driverResources := resourceslice.DriverResources{
 			Pools: map[string]resourceslice.Pool{
