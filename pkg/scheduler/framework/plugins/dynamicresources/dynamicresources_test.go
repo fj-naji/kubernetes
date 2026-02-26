@@ -2336,7 +2336,7 @@ func testPlugin(tCtx ktesting.TContext) {
 								Obj()
 						},
 					},
-					status: fwk.AsStatus(errors.New("device binding timeout: claim=" + claim.Name)),
+					status: fwk.AsStatus(fmt.Errorf("%w: claim=%s", ErrDeviceBindingTimeout, claim.Name)),
 				},
 			},
 			metrics: func(tCtx ktesting.TContext, g compbasemetrics.Gatherer) {
