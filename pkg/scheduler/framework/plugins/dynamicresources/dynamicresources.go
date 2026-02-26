@@ -1108,10 +1108,10 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 	}
 
 	// We need to check if the device is attached to the node.
-	requiresBC := hasBindingConditions(state)
+	needToWait := hasBindingConditions(state)
 
-	// No BindingConditions: return early, histogram will be observed with requires_bindingconditions="false"
-	if !requiresBC {
+	// If no device needs to be prepared, we can return early.
+	if !needToWait {
 		return nil
 	}
 
