@@ -225,6 +225,10 @@ func StartPlugin(ctx context.Context, cdiDir, driverName string, kubeClient kube
 		}
 	}
 
+	// Start the binding conditions controller - must run independently of
+    // kubelet calls because the scheduler checks conditions BEFORE binding.
+    ex.StartBindingConditionsController(ctx, kubeClient)
+
 	return ex, nil
 }
 
@@ -410,6 +414,10 @@ func (ex *ExamplePlugin) nodePrepareResource(ctx context.Context, claim *resourc
 
 	logger.V(3).Info("CDI file(s) created", "devices", devices)
 	ex.prepared[claimID] = devices
+	if err := ex.updateBindingConditions(ctx, claim); err != nil {
+        logger.Error(err, "Failed to update binding conditions", "claim", klog.KObj(claim))
+        // Non-fatal: don't fail the prepare because of this
+    }
 	return devices, nil
 }
 
@@ -462,8 +470,6 @@ func (ex *ExamplePlugin) nodeUnprepareResource(ctx context.Context, claimRef kub
 
 	logger := klog.FromContext(ctx)
 
-	ex.mutex.Lock()
-	defer ex.mutex.Unlock()
 	claimID := ClaimID{Name: claimRef.Name, UID: claimRef.UID}
 	devices, ok := ex.prepared[claimID]
 	if !ok {
@@ -597,17 +603,6 @@ func (ex *ExamplePlugin) SetGetInfoError(err error) {
 	ex.d.SetGetInfoError(err)
 }
 
-// SetNotifyRegistrationStatusError sets an error to be returned by the
-// plugin's NotifyRegistrationStatus call.
-// This can be used in tests to simulate a registration failure scenario,
-// allowing verification that the kubelet plugin manager retries registration
-// when NotifyRegistrationStatus fails.
-//
-// To restore normal NotifyRegistrationStatus behavior, call SetNotifyRegistrationStatusError(nil).
-func (ex *ExamplePlugin) SetNotifyRegistrationStatusError(err error) {
-	ex.d.SetNotifyRegistrationStatusError(err)
-}
-
 func (ex *ExamplePlugin) NodeWatchResources(req *drahealthv1alpha1.NodeWatchResourcesRequest, srv drahealthv1alpha1.DRAResourceHealth_NodeWatchResourcesServer) error {
 	logger := klog.FromContext(srv.Context())
 	logger.V(3).Info("Starting dynamic NodeWatchResources stream")
@@ -697,4 +692,298 @@ func (ex *ExamplePlugin) sendHealthUpdate(srv drahealthv1alpha1.DRAResourceHealt
 	resp := &drahealthv1alpha1.NodeWatchResourcesResponse{Devices: healthUpdates}
 	logger.V(5).Info("Test driver sending health update", "response", resp)
 	return srv.Send(resp)
+}
+
+// StartBindingConditionsController starts a goroutine that watches ResourceClaims
+// and sets binding conditions as soon as they are allocated, before kubelet
+// calls NodePrepareResources. This is necessary because the scheduler waits
+// for binding conditions to be set before binding the pod to the node.
+func (ex *ExamplePlugin) StartBindingConditionsController(ctx context.Context, kubeClient kubernetes.Interface) {
+    logger := klog.FromContext(ctx)
+    logger.V(3).Info("Starting binding conditions controller")
+
+    go func() {
+        ticker := time.NewTicker(200 * time.Millisecond)
+        defer ticker.Stop()
+
+        for {
+            select {
+            case <-ctx.Done():
+                return
+            case <-ticker.C:
+                if err := ex.reconcileAllClaimBindingConditions(ctx, kubeClient); err != nil {
+                    logger.Error(err, "Failed to reconcile binding conditions")
+                }
+            }
+        }
+    }()
+}
+
+// reconcileAllClaimBindingConditions finds all allocated ResourceClaims
+// for our driver and sets binding conditions based on the device scenario.
+func (ex *ExamplePlugin) reconcileAllClaimBindingConditions(ctx context.Context, kubeClient kubernetes.Interface) error {
+    logger := klog.FromContext(ctx)
+
+    // List all ResourceClaims across all namespaces
+    claims, err := kubeClient.ResourceV1().ResourceClaims("").List(ctx, metav1.ListOptions{})
+    if err != nil {
+        return fmt.Errorf("list resource claims: %w", err)
+    }
+
+    for i := range claims.Items {
+        claim := &claims.Items[i]
+
+        // Skip unallocated claims
+        if claim.Status.Allocation == nil {
+            continue
+        }
+
+        // Skip if no results for our driver
+        hasOurDriver := false
+        for _, result := range claim.Status.Allocation.Devices.Results {
+            if result.Driver == ex.driverName {
+                hasOurDriver = true
+                break
+            }
+        }
+        if !hasOurDriver {
+            continue
+        }
+
+        if err := ex.reconcileClaimBindingConditions(ctx, claim, kubeClient); err != nil {
+            logger.Error(err, "Failed to reconcile claim", "claim", klog.KObj(claim))
+        }
+    }
+    return nil
+}
+
+// reconcileClaimBindingConditions updates device status conditions for a single claim.
+func (ex *ExamplePlugin) reconcileClaimBindingConditions(ctx context.Context, claim *resourceapi.ResourceClaim, kubeClient kubernetes.Interface) error {
+    logger := klog.FromContext(ctx)
+
+    updatedClaim := claim.DeepCopy()
+    needsUpdate := false
+
+    for _, deviceResult := range claim.Status.Allocation.Devices.Results {
+        if deviceResult.Driver != ex.driverName {
+            continue
+        }
+        if len(deviceResult.BindingConditions) == 0 {
+            continue
+        }
+
+        scenario := ex.getDeviceScenario(deviceResult.Device)
+        logger.V(5).Info("Reconciling binding conditions",
+            "claim", klog.KObj(claim),
+            "device", deviceResult.Device,
+            "scenario", scenario,
+        )
+
+        deviceStatus := findOrCreateDeviceStatus(updatedClaim, deviceResult)
+
+        switch scenario {
+        case "normal":
+            needsUpdate = setBindingCondition(deviceStatus,
+                "FabricDeviceReady",
+                metav1.ConditionTrue,
+                "DeviceReady",
+                "Device is ready for binding",
+            ) || needsUpdate
+
+        case "retry":
+            if claim.Status.Allocation.AllocationTimestamp != nil &&
+                time.Since(claim.Status.Allocation.AllocationTimestamp.Time) >= 10*time.Second {
+                needsUpdate = setBindingCondition(deviceStatus,
+                    "FabricDeviceReady",
+                    metav1.ConditionTrue,
+                    "DeviceReady",
+                    "Device is ready after retry delay",
+                ) || needsUpdate
+            } else {
+                logger.V(5).Info("Retry scenario: not ready yet", "device", deviceResult.Device)
+            }
+
+        case "avoid":
+            needsUpdate = setBindingCondition(deviceStatus,
+                "FabricDeviceReschedule",
+                metav1.ConditionTrue,
+                "RescheduleRequired",
+                "Device requires rescheduling to another node",
+            ) || needsUpdate
+
+        case "reconsider":
+            needsUpdate = setBindingCondition(deviceStatus,
+                "FabricDeviceFailed",
+                metav1.ConditionTrue,
+                "BindingFailed",
+                "Device binding has permanently failed",
+            ) || needsUpdate
+
+        case "timeout":
+            // Intentionally do nothing
+            logger.V(5).Info("Timeout scenario: not setting conditions", "device", deviceResult.Device)
+        }
+    }
+
+    if !needsUpdate {
+        return nil
+    }
+
+    logger.V(4).Info("Updating claim binding conditions", "claim", klog.KObj(updatedClaim))
+    _, err := kubeClient.ResourceV1().ResourceClaims(updatedClaim.Namespace).
+        UpdateStatus(ctx, updatedClaim, metav1.UpdateOptions{})
+    return err
+}
+
+// updateBindingConditions inspects each allocated device in the claim,
+// looks up its scenario attribute, and sets the appropriate conditions
+// on claim.Status.Devices.
+func (ex *ExamplePlugin) updateBindingConditions(ctx context.Context, claim *resourceapi.ResourceClaim) error {
+    logger := klog.FromContext(ctx)
+
+    if claim.Status.Allocation == nil {
+        return nil
+    }
+
+    updatedClaim := claim.DeepCopy()
+    needsUpdate := false
+
+    for _, deviceResult := range claim.Status.Allocation.Devices.Results {
+        // Only handle our driver's devices
+        if deviceResult.Driver != ex.driverName {
+            continue
+        }
+        // Skip devices with no binding conditions
+        if len(deviceResult.BindingConditions) == 0 {
+            continue
+        }
+
+        scenario := ex.getDeviceScenario(deviceResult.Device)
+        logger.V(5).Info("Setting binding conditions",
+            "claim", klog.KObj(claim),
+            "device", deviceResult.Device,
+            "scenario", scenario,
+        )
+
+        deviceStatus := findOrCreateDeviceStatus(updatedClaim, deviceResult)
+
+        switch scenario {
+        case "normal":
+            // Immediately ready → success path in scheduler
+            needsUpdate = setBindingCondition(deviceStatus, "FabricDeviceReady",
+                metav1.ConditionTrue, "DeviceReady", "Device is ready for binding") || needsUpdate
+
+        case "retry":
+            // Simulate delay: set ready after 10 seconds
+            if claim.Status.Allocation.AllocationTimestamp != nil &&
+                time.Since(claim.Status.Allocation.AllocationTimestamp.Time) >= 10*time.Second {
+                needsUpdate = setBindingCondition(deviceStatus, "FabricDeviceReady",
+                    metav1.ConditionTrue, "DeviceReady", "Device is ready after retry") || needsUpdate
+            } else {
+                logger.V(5).Info("Retry scenario: not ready yet, waiting", "device", deviceResult.Device)
+            }
+
+        case "avoid":
+            // Set failure condition → triggers ErrDeviceBindingFailed in scheduler
+            needsUpdate = setBindingCondition(deviceStatus, "FabricDeviceReschedule",
+                metav1.ConditionTrue, "RescheduleRequired", "Device requires rescheduling to another node") || needsUpdate
+
+        case "reconsider":
+            // Set failure condition → triggers ErrDeviceBindingFailed in scheduler
+            needsUpdate = setBindingCondition(deviceStatus, "FabricDeviceFailed",
+                metav1.ConditionTrue, "BindingFailed", "Device binding has permanently failed") || needsUpdate
+
+        case "timeout":
+            // Intentionally set nothing → scheduler poll will hit bindingTimeout
+            logger.V(5).Info("Timeout scenario: not setting any conditions", "device", deviceResult.Device)
+
+        default:
+            logger.V(5).Info("Unknown scenario, skipping", "device", deviceResult.Device, "scenario", scenario)
+        }
+    }
+
+    if !needsUpdate {
+        return nil
+    }
+
+    logger.V(4).Info("Updating claim binding conditions status", "claim", klog.KObj(updatedClaim))
+    _, err := ex.UpdateStatus(ctx, updatedClaim)
+    return err
+}
+
+// getDeviceScenario looks up the scenario attribute for a device by name
+// from the driver's published resource slices.
+func (ex *ExamplePlugin) getDeviceScenario(deviceName string) string {
+    if ex.fileOps.DriverResources == nil {
+        return "normal"
+    }
+
+    scenarioAttrName := resourceapi.QualifiedName(fmt.Sprintf("%s/scenario", ex.driverName))
+
+    for _, pool := range ex.fileOps.DriverResources.Pools {
+        for _, slice := range pool.Slices {
+            for _, device := range slice.Devices {
+                if device.Name == deviceName {
+                    if attr, ok := device.Attributes[scenarioAttrName]; ok && attr.StringValue != nil {
+                        return *attr.StringValue
+                    }
+                }
+            }
+        }
+    }
+    return "normal" // safe default
+}
+
+// findOrCreateDeviceStatus finds an existing AllocatedDeviceStatus entry
+// or appends a new one and returns a pointer to it.
+func findOrCreateDeviceStatus(
+    claim *resourceapi.ResourceClaim,
+    deviceResult resourceapi.DeviceRequestAllocationResult,
+) *resourceapi.AllocatedDeviceStatus {
+    for i := range claim.Status.Devices {
+        d := &claim.Status.Devices[i]
+        if d.Driver == deviceResult.Driver &&
+            d.Pool == deviceResult.Pool &&
+            d.Device == deviceResult.Device {
+            return d
+        }
+    }
+    claim.Status.Devices = append(claim.Status.Devices, resourceapi.AllocatedDeviceStatus{
+        Driver: deviceResult.Driver,
+        Pool:   deviceResult.Pool,
+        Device: deviceResult.Device,
+    })
+    return &claim.Status.Devices[len(claim.Status.Devices)-1]
+}
+
+// setBindingCondition sets or updates a condition on a device status entry.
+// Returns true if the condition was changed (i.e. an API update is needed).
+func setBindingCondition(
+    deviceStatus *resourceapi.AllocatedDeviceStatus,
+    condType string,
+    status metav1.ConditionStatus,
+    reason, message string,
+) bool {
+    now := metav1.Now()
+    for i, cond := range deviceStatus.Conditions {
+        if cond.Type == condType {
+            if cond.Status == status {
+                return false // already correct, no update needed
+            }
+            deviceStatus.Conditions[i].Status = status
+            deviceStatus.Conditions[i].Reason = reason
+            deviceStatus.Conditions[i].Message = message
+            deviceStatus.Conditions[i].LastTransitionTime = now
+            return true
+        }
+    }
+    // Condition doesn't exist yet, append it
+    deviceStatus.Conditions = append(deviceStatus.Conditions, metav1.Condition{
+        Type:               condType,
+        Status:             status,
+        Reason:             reason,
+        Message:            message,
+        LastTransitionTime: now,
+    })
+    return true
 }
