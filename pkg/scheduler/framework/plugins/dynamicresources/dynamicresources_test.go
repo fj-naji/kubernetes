@@ -41,6 +41,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
@@ -1049,8 +1050,8 @@ type testPluginCase struct {
 	// Invoke Filter with a canceled context.
 	cancelFilter bool
 
-	// enableDRAAdminAccess is set to true if the DRAAdminAccess feature gate is enabled.
-	enableDRAAdminAccess bool
+	// disableDRAAdminAccess is set to true to test behavior with the DRAAdminAccess feature gate disabled (emulates v1.35).
+	disableDRAAdminAccess bool
 	// enableDRADeviceBindingConditions is set to true if the DRADeviceBindingConditions feature gate is enabled.
 	enableDRADeviceBindingConditions bool
 	// EnableDRAResourceClaimDeviceStatus is set to true if the DRAResourceClaimDeviceStatus feature gate is enabled.
@@ -1494,7 +1495,6 @@ func testPlugin(tCtx ktesting.TContext) {
 					assumedClaim: reserve(adminAccess(allocatedClaim), podWithClaimName),
 				},
 			},
-			enableDRAAdminAccess: true,
 		},
 		"request-admin-access-without-DRAAdminAccess-featuregate": {
 			// When the DRAAdminAccess feature gate is disabled,
@@ -1511,7 +1511,7 @@ func testPlugin(tCtx ktesting.TContext) {
 					},
 				},
 			},
-			enableDRAAdminAccess: false,
+			disableDRAAdminAccess: true,
 		},
 
 		"structured-ignore-allocated-admin-access": {
@@ -2190,6 +2190,35 @@ func testPlugin(tCtx ktesting.TContext) {
 					status: nil,
 				},
 			},
+			metrics: func(tCtx ktesting.TContext, g compbasemetrics.Gatherer) {
+				// Counter: allocations_total should have exactly one event
+				allocs, err := testutil.GetCounterValuesFromGatherer(
+					g,
+					"scheduler_dra_bindingconditions_allocations_total",
+					map[string]string{
+						"status": "success",
+					},
+					"driver", // group by driver label
+				)
+				require.NoError(tCtx, err)
+
+				var totalAllocs float64
+				for _, v := range allocs {
+					totalAllocs += v
+				}
+				require.InEpsilon(tCtx, float64(1), totalAllocs, 0.1, "expected exactly one successful allocation with BindingConditions")
+
+				// Histogram: one success sample with requires_bindingconditions=true
+				hist, err := testutil.GetHistogramVecFromGatherer(
+					g,
+					"scheduler_dra_bindingconditions_wait_duration_seconds",
+					map[string]string{
+						"status": "success",
+					},
+				)
+				require.NoError(tCtx, err)
+				require.Equal(tCtx, uint64(1), hist.GetAggregatedSampleCount(), "expected one success sample in wait duration histogram")
+			},
 		},
 		"bound-claim-with-failed-binding": {
 			enableDRADeviceBindingConditions:   true,
@@ -2307,8 +2336,37 @@ func testPlugin(tCtx ktesting.TContext) {
 								Obj()
 						},
 					},
-					status: fwk.AsStatus(errors.New("claim " + claim.Name + " binding timeout")),
+					status: fwk.AsStatus(fmt.Errorf("%w: claim=%s", ErrDeviceBindingTimeout, claim.Name)),
 				},
+			},
+			metrics: func(tCtx ktesting.TContext, g compbasemetrics.Gatherer) {
+				// Counter: timeouts_total should have exactly one event
+				timeouts, err := testutil.GetCounterValuesFromGatherer(
+					g,
+					"scheduler_dra_bindingconditions_allocations_total",
+					map[string]string{
+						"status": "timeout",
+					},
+					"driver",
+				)
+				require.NoError(tCtx, err)
+
+				var totalTimeouts float64
+				for _, v := range timeouts {
+					totalTimeouts += v
+				}
+				require.InEpsilon(tCtx, float64(1), totalTimeouts, 0.1, "expected exactly one timeout with BindingConditions")
+
+				// Histogram: one timeout sample with requires_bindingconditions=true
+				hist, err := testutil.GetHistogramVecFromGatherer(
+					g,
+					"scheduler_dra_bindingconditions_wait_duration_seconds",
+					map[string]string{
+						"status": "timeout",
+					},
+				)
+				require.NoError(tCtx, err)
+				require.Equal(tCtx, uint64(1), hist.GetAggregatedSampleCount(), "expected one timeout sample in wait duration histogram")
 			},
 		},
 		"bound-claim-with-mixed-binding-conditions": {
@@ -2607,7 +2665,7 @@ func testPlugin(tCtx ktesting.TContext) {
 				nodes = []*v1.Node{workerNode}
 			}
 			feats := feature.Features{
-				EnableDRAAdminAccess:               tc.enableDRAAdminAccess,
+				EnableDRAAdminAccess:               !tc.disableDRAAdminAccess,
 				EnableDRADeviceBindingConditions:   tc.enableDRADeviceBindingConditions,
 				EnableDRAResourceClaimDeviceStatus: tc.enableDRAResourceClaimDeviceStatus,
 				EnableDRADeviceTaints:              tc.enableDRADeviceTaints,
@@ -2617,6 +2675,10 @@ func testPlugin(tCtx ktesting.TContext) {
 				EnableDRAExtendedResource:          tc.enableDRAExtendedResource,
 			}
 
+			if tc.disableDRAAdminAccess {
+				featuregatetesting.SetFeatureGateEmulationVersionDuringTest(tCtx, utilfeature.DefaultFeatureGate, version.MustParse("1.35"))
+				featuregatetesting.SetFeatureGateDuringTest(tCtx, utilfeature.DefaultFeatureGate, features.DRAAdminAccess, false)
+			}
 			featuregatetesting.SetFeatureGateDuringTest(tCtx, utilfeature.DefaultFeatureGate, features.DRAExtendedResource, tc.enableDRAExtendedResource)
 			testCtx := setup(tCtx, tc.args, nodes, tc.claims, tc.classes, tc.objs, feats, tc.failPatch, tc.reactors)
 			for _, claim := range tc.inFlightClaims {
@@ -2792,6 +2854,14 @@ func setupMetrics(features feature.Features) compbasemetrics.KubeRegistry {
 		testRegistry.MustRegister(metrics.ResourceClaimCreatesTotal)
 		metrics.ResourceClaimCreatesTotal.Reset()
 	}
+	// DRA DeviceBindingConditions metrics.
+	if features.EnableDRADeviceBindingConditions {
+		testRegistry.MustRegister(metrics.DRABindingConditionsAllocationsTotal)
+		testRegistry.MustRegister(metrics.DRABindingConditionsPreBindDuration)
+
+		metrics.DRABindingConditionsAllocationsTotal.Reset()
+		metrics.DRABindingConditionsPreBindDuration.Reset()
+	}
 	return testRegistry
 }
 
@@ -2899,7 +2969,6 @@ func (tc *testContext) listAll(tCtx ktesting.TContext) (objects []metav1.Object)
 	claims, err := tc.client.ResourceV1().ResourceClaims("").List(tCtx, metav1.ListOptions{})
 	tCtx.ExpectNoError(err, "list claims")
 	for _, claim := range claims.Items {
-		claim := claim
 		objects = append(objects, &claim)
 	}
 	sortObjects(objects)
@@ -2994,6 +3063,7 @@ func setup(tCtx ktesting.TContext, args *config.DynamicResourcesArgs, nodes []*v
 	tc.client.ReactionChain = append(apiReactors, tc.client.ReactionChain...)
 
 	tc.informerFactory = informers.NewSharedInformerFactory(tc.client, 0)
+	var doneCheckers []cache.DoneChecker
 	resourceSliceTrackerOpts := resourceslicetracker.Options{
 		EnableDeviceTaintRules: true,
 		SliceInformer:          tc.informerFactory.Resource().V1().ResourceSlices(),
@@ -3003,6 +3073,7 @@ func setup(tCtx ktesting.TContext, args *config.DynamicResourcesArgs, nodes []*v
 	}
 	resourceSliceTracker, err := resourceslicetracker.StartTracker(tCtx, resourceSliceTrackerOpts)
 	require.NoError(tCtx, err, "couldn't start resource slice tracker")
+	doneCheckers = append(doneCheckers, resourceSliceTracker.HasSyncedChecker())
 
 	claimsCache := assumecache.NewAssumeCache(tCtx.Logger(), tc.informerFactory.Resource().V1().ResourceClaims().Informer(), "resource claim", "", nil)
 	// NewAssumeCache calls the informer's AddEventHandler method to register
@@ -3015,14 +3086,14 @@ func setup(tCtx ktesting.TContext, args *config.DynamicResourcesArgs, nodes []*v
 	// This is not the registered handler that is used by the DRA
 	// manager, but it is close enough because the assume cache
 	// uses a single boolean for "is synced" for all handlers.
-	registeredHandler := claimsCache.AddEventHandler(cache.ResourceEventHandlerFuncs{})
+	doneCheckers = append(doneCheckers, claimsCache.AddEventHandler(cache.ResourceEventHandlerFuncs{}).HasSyncedChecker())
 
 	tc.draManager = NewDRAManager(tCtx, claimsCache, resourceSliceTracker, tc.informerFactory)
 	if features.EnableDRAExtendedResource {
 		cache := tc.draManager.DeviceClassResolver().(*extendedresourcecache.ExtendedResourceCache)
-		if _, err := tc.informerFactory.Resource().V1().DeviceClasses().Informer().AddEventHandler(cache); err != nil {
-			tCtx.Logger().Error(err, "failed to add device class informer event handler")
-		}
+		deviceClassHandlerRegistration, err := tc.informerFactory.Resource().V1().DeviceClasses().Informer().AddEventHandler(cache)
+		require.NoError(tCtx, err, "failed to add device class informer event handler")
+		doneCheckers = append(doneCheckers, deviceClassHandlerRegistration.HasSyncedChecker())
 	}
 
 	opts := []runtime.Option{
@@ -3065,11 +3136,11 @@ func setup(tCtx ktesting.TContext, args *config.DynamicResourcesArgs, nodes []*v
 	})
 
 	tc.informerFactory.WaitForCacheSync(tCtx.Done())
-	// The above does not tell us if the registered handler (from NewAssumeCache)
-	// is synced, we need to wait until HasSynced of the handler returns
-	// true, this ensures that the assume cache is in sync with the informer's
+	// The above does not tell us if the registered handlers (e.g. from NewAssumeCache)
+	// are synced, we need to wait until the event handlers confirm that they are synced.
+	// This ensures that the assume cache is in sync with the informer's
 	// store which has been informed by at least one full LIST of the underlying storage.
-	cache.WaitForNamedCacheSyncWithContext(tCtx, registeredHandler.HasSynced, resourceSliceTracker.HasSynced)
+	cache.WaitFor(tCtx, "event handlers", doneCheckers...)
 
 	for _, node := range nodes {
 		nodeInfo := framework.NewNodeInfo()
@@ -3422,7 +3493,7 @@ func TestAllocatorSelection(t *testing.T) {
 		// is used.
 		"default": {
 			features:             "",
-			expectImplementation: "stable",
+			expectImplementation: "incubating",
 		},
 
 		// Alpha features need the experimental implementation.

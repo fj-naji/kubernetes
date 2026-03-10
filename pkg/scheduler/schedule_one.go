@@ -179,6 +179,10 @@ func (sched *Scheduler) schedulingCycle(
 	start time.Time,
 	podsToActivate *framework.PodsToActivate,
 ) (ScheduleResult, *framework.QueuedPodInfo, *fwk.Status) {
+	if err := sched.Cache.UpdateSnapshot(klog.FromContext(ctx), sched.nodeInfoSnapshot); err != nil {
+		return ScheduleResult{nominatingInfo: clearNominatedNode}, podInfo, fwk.AsStatus(err)
+	}
+
 	scheduleResult, status := sched.schedulingAlgorithm(ctx, state, schedFramework, podInfo, start)
 	if !status.IsSuccess() {
 		return scheduleResult, podInfo, status
@@ -209,8 +213,10 @@ func (sched *Scheduler) prepareForBindingCycle(
 	assumedPod := assumedPodInfo.Pod
 
 	// Run "permit" plugins.
-	runPermitStatus := schedFramework.RunPermitPlugins(ctx, state, assumedPod, scheduleResult.SuggestedHost)
-	if !runPermitStatus.IsWait() && !runPermitStatus.IsSuccess() {
+	pluginsWaitTime, runPermitStatus := schedFramework.RunPermitPlugins(ctx, state, assumedPod, scheduleResult.SuggestedHost)
+	if runPermitStatus.IsWait() {
+		schedFramework.AddWaitingPod(assumedPod, pluginsWaitTime)
+	} else if !runPermitStatus.IsSuccess() {
 		// trigger un-reserve plugins to clean up state associated with the reserved Pod
 		err := sched.unreserveAndForget(ctx, state, schedFramework, assumedPodInfo, scheduleResult.SuggestedHost)
 		if err != nil {
@@ -563,14 +569,8 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk framework.Framework
 	pod := podInfo.Pod
 	trace := utiltrace.New("Scheduling", utiltrace.Field{Key: "namespace", Value: pod.Namespace}, utiltrace.Field{Key: "name", Value: pod.Name})
 	defer trace.LogIfLong(100 * time.Millisecond)
-	if !podInfo.NeedsPodGroupScheduling {
-		if err := sched.Cache.UpdateSnapshot(klog.FromContext(ctx), sched.nodeInfoSnapshot); err != nil {
-			return result, err
-		}
-		trace.Step("Snapshotting scheduler cache and node infos done")
-	}
 
-	if sched.nodeInfoSnapshot.NumNodes() == 0 {
+	if sched.nodeInfoSnapshot.NumNodesInPlacement() == 0 {
 		return result, ErrNoNodesAvailable
 	}
 
@@ -583,7 +583,7 @@ func (sched *Scheduler) schedulePod(ctx context.Context, fwk framework.Framework
 	if len(feasibleNodes) == 0 {
 		return result, &framework.FitError{
 			Pod:         pod,
-			NumAllNodes: sched.nodeInfoSnapshot.NumNodes(),
+			NumAllNodes: sched.nodeInfoSnapshot.NumNodesInPlacement(),
 			Diagnosis:   diagnosis,
 		}
 	}
@@ -628,7 +628,7 @@ func (sched *Scheduler) findNodesThatFitPod(ctx context.Context, schedFramework 
 	diagnosis := framework.Diagnosis{
 		NodeToStatus: framework.NewDefaultNodeToStatus(),
 	}
-	allNodes, err := sched.nodeInfoSnapshot.NodeInfos().List()
+	allNodes, err := sched.nodeInfoSnapshot.ListNodesInPlacement()
 	if err != nil {
 		return nil, diagnosis, "", nil, err
 	}
@@ -677,8 +677,8 @@ func (sched *Scheduler) findNodesThatFitPod(ctx context.Context, schedFramework 
 		nodes = make([]fwk.NodeInfo, 0, len(preRes.NodeNames))
 		for nodeName := range preRes.NodeNames {
 			// PreRes may return nodeName(s) which do not exist; we verify
-			// node exists in the Snapshot.
-			if nodeInfo, err := sched.nodeInfoSnapshot.Get(nodeName); err == nil {
+			// node exists in the Snapshot within the selected placement.
+			if nodeInfo, err := sched.nodeInfoSnapshot.GetNodeInPlacement(nodeName); err == nil {
 				nodes = append(nodes, nodeInfo)
 			}
 		}
@@ -723,9 +723,16 @@ func (sched *Scheduler) evaluateNominatedNode(ctx context.Context, pod *v1.Pod, 
 		nnn = nodeHint
 	}
 
-	nodeInfo, err := sched.nodeInfoSnapshot.Get(nnn)
+	nodeInfo, err := sched.nodeInfoSnapshot.GetNodeInPlacement(nnn)
 	if err != nil {
-		return nil, err
+		if _, err := sched.nodeInfoSnapshot.Get(nnn); err != nil {
+			return nil, err
+		}
+		// It's not an error if NNN is in the cluster but not in the placement.
+		// This can happen during the pod group placement scheduling cycle, where we simulate multiple potential placements.
+		logger := klog.FromContext(ctx)
+		logger.V(4).Info("Pod's nominated node is present in the cluster but not available in the current placement", "pod", klog.KObj(pod), "node", pod.Status.NominatedNodeName)
+		return nil, nil
 	}
 	node := []fwk.NodeInfo{nodeInfo}
 	feasibleNodes, err := sched.findNodesThatPassFilters(ctx, schedFramework, state, pod, &diagnosis, node)

@@ -1789,10 +1789,8 @@
       ]
     },
     "hostnameOverride": "hostnameOverrideValue",
-    "workloadRef": {
-      "name": "nameValue",
-      "podGroup": "podGroupValue",
-      "podGroupReplicaKey": "podGroupReplicaKeyValue"
+    "schedulingGroup": {
+      "podGroupName": "podGroupNameValue"
     }
   },
   "status": {
@@ -1915,7 +1913,8 @@
             "resources": [
               {
                 "resourceID": "resourceIDValue",
-                "health": "healthValue"
+                "health": "healthValue",
+                "message": "messageValue"
               }
             ]
           }
@@ -2013,7 +2012,8 @@
             "resources": [
               {
                 "resourceID": "resourceIDValue",
-                "health": "healthValue"
+                "health": "healthValue",
+                "message": "messageValue"
               }
             ]
           }
@@ -2112,7 +2112,8 @@
             "resources": [
               {
                 "resourceID": "resourceIDValue",
-                "health": "healthValue"
+                "health": "healthValue",
+                "message": "messageValue"
               }
             ]
           }

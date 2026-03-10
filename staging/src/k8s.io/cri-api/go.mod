@@ -2,14 +2,14 @@
 
 module k8s.io/cri-api
 
-go 1.25.0
+go 1.26.0
 
-godebug default=go1.25
+godebug default=go1.26
 
 require (
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.78.0
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 )
 
 require (

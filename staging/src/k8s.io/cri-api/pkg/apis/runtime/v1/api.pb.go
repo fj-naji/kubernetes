@@ -1117,7 +1117,7 @@ type Mount struct {
 	// Mount an image reference (image ID, with or without digest), which is a
 	// special use case for image volume mounts. If this field is set, then
 	// host_path should be unset. All image mounts are per feature definition
-	// readonly (noexec). The kubelet does an PullImage RPC and evaluates the returned
+	// readonly. The kubelet does an PullImage RPC and evaluates the returned
 	// PullImageResponse.image_ref value, which is then set to the
 	// ImageSpec.image field. Runtimes are expected to mount the image as
 	// required.
@@ -6216,15 +6216,11 @@ type Container struct {
 	// MUST be identical to that of the corresponding ContainerConfig used to
 	// instantiate this Container.
 	Annotations map[string]string `protobuf:"bytes,9,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Reference to the unique identifier of the image, on the node, as
-	// returned in the image service apis.
+	// Reference to the unique identifier of the image on the node, as
+	// returned in the image and runtime service apis.
 	//
-	// Note: The image_ref above has been historically used by container
-	// runtimes to reference images by digest. The image_ref has been also used
-	// in the kubelet image garbage collection, which does not work with
-	// digests at all. To separate and avoid possible misusage, we now
-	// introduce the image_id field, which should always refer to a unique
-	// image identifier on the node.
+	// This value MUST always match `PullImageResponse.image_ref` when referring
+	// to the same image.
 	ImageId       string `protobuf:"bytes,10,opt,name=image_id,json=imageId,proto3" json:"image_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -6469,13 +6465,11 @@ type ContainerStatus struct {
 	LogPath string `protobuf:"bytes,15,opt,name=log_path,json=logPath,proto3" json:"log_path,omitempty"`
 	// Resource limits configuration of the container.
 	Resources *ContainerResources `protobuf:"bytes,16,opt,name=resources,proto3" json:"resources,omitempty"`
-	// Reference to the unique identifier of the image, on the node, as
-	// returned in the image service apis.
+	// Reference to the unique identifier of the image on the node, as
+	// returned in the image and runtime service apis.
 	//
-	// Note: The image_ref above has been historically used by container
-	// runtimes to reference images by digest. To separate and avoid possible
-	// misusage, we now introduce the image_id field, which should always refer
-	// to a unique image identifier on the node.
+	// This value MUST always match `PullImageResponse.image_ref` when referring
+	// to the same image.
 	ImageId string `protobuf:"bytes,17,opt,name=image_id,json=imageId,proto3" json:"image_id,omitempty"`
 	// User identities initially attached to the container
 	User *ContainerUser `protobuf:"bytes,18,opt,name=user,proto3" json:"user,omitempty"`
@@ -7516,7 +7510,11 @@ func (x *ListImagesRequest) GetFilter() *ImageFilter {
 // Basic information about a container image.
 type Image struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// ID of the image.
+	// Reference to the unique identifier of the image on the node, as
+	// returned in the image and runtime service apis.
+	//
+	// This value MUST always match `PullImageResponse.image_ref` when referring
+	// to the same image.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	// Other names by which this image is known.
 	RepoTags []string `protobuf:"bytes,2,rep,name=repo_tags,json=repoTags,proto3" json:"repo_tags,omitempty"`
@@ -7936,8 +7934,20 @@ func (x *PullImageRequest) GetSandboxConfig() *PodSandboxConfig {
 
 type PullImageResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Reference to the image in use. For most runtimes, this should be an
-	// image ID or digest.
+	// Reference to the unique identifier of the image on the node, as
+	// returned in the image and runtime service apis.
+	//
+	// When referring to the same image, the container runtime MUST always return
+	// the same value for:
+	//   - Image.id
+	//   - Container.image_id
+	//   - ContainerStatus.image_id
+	//   - PullImageResponse.image_ref
+	//
+	// Note: this field has a stricter meaning starting with v1.36.
+	// It used to be image ID OR digest, which are different values,
+	// and would not necessarily match other ID fields in the Container,
+	// ContainerStatus, and Image messages
 	ImageRef      string `protobuf:"bytes,1,opt,name=image_ref,json=imageRef,proto3" json:"image_ref,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

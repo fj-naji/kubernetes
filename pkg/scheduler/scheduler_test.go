@@ -29,6 +29,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/onsi/gomega"
+	"github.com/stretchr/testify/require"
 
 	v1 "k8s.io/api/core/v1"
 	eventsv1 "k8s.io/api/events/v1"
@@ -691,7 +692,7 @@ func Test_buildQueueingHintMap(t *testing.T) {
 				{Resource: fwk.DeviceClass, ActionType: fwk.All}: {
 					{PluginName: filterWithoutEnqueueExtensions, QueueingHintFn: defaultQueueingHintFn},
 				},
-				{Resource: fwk.Workload, ActionType: fwk.All}: {
+				{Resource: fwk.PodGroup, ActionType: fwk.All}: {
 					{PluginName: filterWithoutEnqueueExtensions, QueueingHintFn: defaultQueueingHintFn},
 				},
 			},
@@ -884,7 +885,7 @@ func Test_UnionedGVKs(t *testing.T) {
 				fwk.StorageClass:          fwk.All,
 				fwk.ResourceClaim:         fwk.All,
 				fwk.DeviceClass:           fwk.All,
-				fwk.Workload:              fwk.All,
+				fwk.PodGroup:              fwk.All,
 			},
 			enableGangScheduling:            true,
 			enableInPlacePodVerticalScaling: true,
@@ -1074,7 +1075,7 @@ func Test_UnionedGVKs(t *testing.T) {
 				fwk.DeviceClass:           fwk.All - fwk.Delete,
 				fwk.ResourceClaim:         fwk.All - fwk.Delete,
 				fwk.ResourceSlice:         fwk.All - fwk.Delete,
-				fwk.Workload:              fwk.Add,
+				fwk.PodGroup:              fwk.Add,
 			},
 			enableGangScheduling:            true,
 			enableInPlacePodVerticalScaling: true,
@@ -1463,3 +1464,32 @@ func (f fakePermitPlugin) Permit(ctx context.Context, state fwk.CycleState, p *v
 }
 
 var _ fwk.PermitPlugin = &fakePermitPlugin{}
+
+func TestNewInformerFactoryTrim(t *testing.T) {
+	cs := fake.NewClientset()
+
+	pd := &v1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      "test",
+		Namespace: "default",
+		ManagedFields: []metav1.ManagedFieldsEntry{
+			{
+				Manager:    "update",
+				Operation:  metav1.ManagedFieldsOperationApply,
+				APIVersion: "apps/v1",
+			},
+		},
+	}}
+	require.NoError(t, cs.Tracker().Add(pd))
+
+	informerFactory := NewInformerFactory(cs, 0)
+	lister := informerFactory.Core().V1().Pods().Lister()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	informerFactory.Start(ctx.Done())
+	informerFactory.WaitForCacheSync(ctx.Done())
+
+	p, err := lister.Pods("default").Get("test")
+	require.NoError(t, err)
+	require.Empty(t, p.GetManagedFields(), "expected managedFields to be trimmed by the transform")
+}

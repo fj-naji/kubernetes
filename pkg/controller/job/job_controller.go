@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -601,6 +602,10 @@ func (jm *Controller) deleteJob(logger klog.Logger, obj interface{}) {
 			return
 		}
 	}
+	jm.consistencyStore.Clear(types.NamespacedName{
+		Namespace: jobObj.Namespace,
+		Name:      jobObj.Name,
+	}, jobObj.UID)
 	jm.finishedJobExpectations.Delete(jobObj.UID)
 	jm.enqueueLabelSelector(jobObj)
 
@@ -929,6 +934,10 @@ func (jm *Controller) syncJob(ctx context.Context, key string) (rErr error) {
 			// re-syncing here as the record has to be removed for finished/deleted jobs
 			return fmt.Errorf("error removing backoff record %w", err)
 		}
+		jm.consistencyStore.Clear(types.NamespacedName{
+			Namespace: job.Namespace,
+			Name:      job.Name,
+		}, job.UID)
 		jm.finishedJobExpectations.Delete(job.UID)
 		return nil
 	}
@@ -2010,10 +2019,8 @@ func getCompletionMode(job *batch.Job) string {
 }
 
 func appendJobCompletionFinalizerIfNotFound(finalizers []string) []string {
-	for _, fin := range finalizers {
-		if fin == batch.JobTrackingFinalizer {
-			return finalizers
-		}
+	if slices.Contains(finalizers, batch.JobTrackingFinalizer) {
+		return finalizers
 	}
 	return append(finalizers, batch.JobTrackingFinalizer)
 }

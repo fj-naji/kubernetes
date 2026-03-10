@@ -218,7 +218,7 @@ type VolumeSource struct {
 	// A failure to resolve or pull the image during pod startup will block containers from starting and may add significant latency. Failures will be retried using normal volume backoff and will be reported on the pod reason and message.
 	// The types of objects that may be mounted by this volume are defined by the container runtime implementation on a host machine and at minimum must include all valid types supported by the container image field.
 	// The OCI object gets mounted in a single directory (spec.containers[*].volumeMounts.mountPath) by merging the manifest layers in the same way as for container images.
-	// The volume will be mounted read-only (ro) and non-executable files (noexec).
+	// The volume will be mounted read-only (ro).
 	// Sub path mounts for containers are not supported (spec.containers[*].volumeMounts.subpath) before 1.33.
 	// The field spec.securityContext.fsGroupChangePolicy has no effect on this volume type.
 	// +featureGate=ImageVolume
@@ -2350,7 +2350,8 @@ type SecretKeySelector struct {
 
 // EnvFromSource represents the source of a set of ConfigMaps or Secrets
 type EnvFromSource struct {
-	// Optional text to prepend to the name of each environment variable. Must be a C_IDENTIFIER.
+	// Optional text to prepend to the name of each environment variable.
+	// May consist of any printable ASCII characters except '='.
 	// +optional
 	Prefix string
 	// The ConfigMap to select from.
@@ -2640,7 +2641,8 @@ type Container struct {
 	// +optional
 	Ports []ContainerPort
 	// List of sources to populate environment variables in the container.
-	// The keys defined within a source must be a C_IDENTIFIER. All invalid keys
+	// The keys defined within a source may consist of any printable ASCII characters except '='.
+	// All invalid keys
 	// will be reported as an event when the container is starting. When a key exists in multiple
 	// sources, the value associated with the last source will take precedence.
 	// Values defined by an Env with a duplicate key will take precedence.
@@ -3075,6 +3077,9 @@ type ResourceHealth struct {
 	//
 	// In future we may want to introduce the PermanentlyUnhealthy Status.
 	Health ResourceHealthStatus
+	// Message provides human-readable context for Health (e.g. "ECC error count exceeded threshold").
+	// This field is populated by the kubelet when ResourceHealthStatusMessage is enabled.
+	Message *string
 }
 
 // ContainerUser represents user identity information
@@ -3917,17 +3922,22 @@ type PodSpec struct {
 	// +featureGate=HostnameOverride
 	// +optional
 	HostnameOverride *string
-	// WorkloadRef provides a reference to the Workload object that this Pod belongs to.
-	// This field is used by the scheduler to identify the PodGroup and apply the
-	// correct group scheduling policies. The Workload object referenced
-	// by this field may not exist at the time the Pod is created.
-	// This field is immutable, but a Workload object with the same name
-	// may be recreated with different policies. Doing this during pod scheduling
+	// SchedulingGroup provides a reference to the immediate scheduling runtime
+	// grouping object that this Pod belongs to.
+	// This field is used by the scheduler to identify the group and apply the
+	// correct group scheduling policies. The association with a group also
+	// impacts other lifecycle aspects of a Pod that are relevant in a wider context
+	// of scheduling like preemption, resource attachment, etc. If not specified,
+	// the Pod is treated as a single unit in all of these aspects.
+	// The group object referenced by this field may not exist at the time the
+	// Pod is created.
+	// This field is immutable, but a group object with the same name may be
+	// recreated with different policies. Doing this during pod scheduling
 	// may result in the placement not conforming to the expected policies.
 	//
 	// +featureGate=GenericWorkload
 	// +optional
-	WorkloadRef *WorkloadReference
+	SchedulingGroup *PodSchedulingGroup
 }
 
 // PodResourceClaim references exactly one ResourceClaim through a ClaimSource.
@@ -4026,34 +4036,18 @@ type PodSchedulingGate struct {
 	Name string
 }
 
-// WorkloadReference identifies the Workload object and PodGroup membership
-// that a Pod belongs to. The scheduler uses this information to apply
-// workload-aware scheduling semantics.
-type WorkloadReference struct {
-	// Name defines the name of the Workload object this Pod belongs to.
-	// Workload must be in the same namespace as the Pod.
-	// If it doesn't match any existing Workload, the Pod will remain unschedulable
-	// until a Workload object is created and observed by the kube-scheduler.
-	// It must be a DNS subdomain.
-	//
-	// +required
-	Name string
-
-	// PodGroup is the name of the PodGroup within the Workload that this Pod
-	// belongs to. If it doesn't match any existing PodGroup within the Workload,
-	// the Pod will remain unschedulable until the Workload object is recreated
-	// and observed by the kube-scheduler. It must be a DNS label.
-	//
-	// +required
-	PodGroup string
-
-	// PodGroupReplicaKey specifies the replica key of the PodGroup to which this
-	// Pod belongs. It is used to distinguish pods belonging to different replicas
-	// of the same pod group. The pod group policy is applied separately to each replica.
-	// When set, it must be a DNS label.
+// PodSchedulingGroup identifies the runtime scheduling group instance that a Pod belongs to.
+// The scheduler uses this information to apply workload-aware scheduling semantics.
+// Exactly one field must be specified.
+// +union
+type PodSchedulingGroup struct {
+	// PodGroupName specifies the name of the standalone PodGroup object
+	// that represents the runtime instance of this group.
+	// Must be a DNS subdomain.
 	//
 	// +optional
-	PodGroupReplicaKey string
+	// +oneOf=GroupSelection
+	PodGroupName *string
 }
 
 // HostAlias holds the mapping between IP and hostnames that will be injected as an entry in the
@@ -4427,7 +4421,8 @@ type EphemeralContainerCommon struct {
 	// +optional
 	Ports []ContainerPort
 	// List of sources to populate environment variables in the container.
-	// The keys defined within a source must be a C_IDENTIFIER. All invalid keys
+	// The keys defined within a source may consist of any printable ASCII characters except '='.
+	// All invalid keys
 	// will be reported as an event when the container is starting. When a key exists in multiple
 	// sources, the value associated with the last source will take precedence.
 	// Values defined by an Env with a duplicate key will take precedence.

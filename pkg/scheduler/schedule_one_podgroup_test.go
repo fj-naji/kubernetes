@@ -29,18 +29,21 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/events"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/ktesting"
 	fwk "k8s.io/kube-scheduler/framework"
+	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	internalcache "k8s.io/kubernetes/pkg/scheduler/backend/cache"
 	fakecache "k8s.io/kubernetes/pkg/scheduler/backend/cache/fake"
+	"k8s.io/kubernetes/pkg/scheduler/backend/podgroupmanager"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/backend/queue"
-	"k8s.io/kubernetes/pkg/scheduler/backend/workloadmanager"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
@@ -87,11 +90,11 @@ func (mp *fakePodGroupPlugin) Permit(ctx context.Context, state fwk.CycleState, 
 }
 
 func TestPodGroupInfoForPod(t *testing.T) {
-	ref := &v1.WorkloadReference{Name: "workload", PodGroup: "pg"}
-	p1 := st.MakePod().Name("p1").Namespace("ns1").UID("p1").WorkloadRef(ref).Priority(100).Obj()
-	p2 := st.MakePod().Name("p2").Namespace("ns1").UID("p2").WorkloadRef(ref).Priority(200).Obj()
-	p3 := st.MakePod().Name("p3").Namespace("ns1").UID("p3").WorkloadRef(ref).Priority(150).Obj()
-	p4 := st.MakePod().Name("p4").Namespace("ns1").UID("p4").WorkloadRef(ref).Priority(150).Obj()
+	groupName := "pg"
+	p1 := st.MakePod().Name("p1").Namespace("ns1").UID("p1").PodGroupName(groupName).Priority(100).Obj()
+	p2 := st.MakePod().Name("p2").Namespace("ns1").UID("p2").PodGroupName(groupName).Priority(200).Obj()
+	p3 := st.MakePod().Name("p3").Namespace("ns1").UID("p3").PodGroupName(groupName).Priority(150).Obj()
+	p4 := st.MakePod().Name("p4").Namespace("ns1").UID("p4").PodGroupName(groupName).Priority(150).Obj()
 
 	pInfo1, _ := framework.NewPodInfo(p1)
 	pInfo2, _ := framework.NewPodInfo(p2)
@@ -146,11 +149,11 @@ func TestPodGroupInfoForPod(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logger, ctx := ktesting.NewTestContext(t)
-			wm := workloadmanager.New(logger)
+			manager := podgroupmanager.New(logger)
 
-			wm.AddPod(tt.pInfo.Pod)
+			manager.AddPod(tt.pInfo.Pod)
 			for _, pod := range tt.unscheduledPods {
-				wm.AddPod(pod)
+				manager.AddPod(pod)
 			}
 
 			q := internalqueue.NewTestQueue(ctx, nil)
@@ -161,7 +164,7 @@ func TestPodGroupInfoForPod(t *testing.T) {
 				}
 			}
 			sched := &Scheduler{
-				WorkloadManager: wm,
+				PodGroupManager: manager,
 				SchedulingQueue: q,
 			}
 
@@ -170,8 +173,8 @@ func TestPodGroupInfoForPod(t *testing.T) {
 				t.Fatalf("Failed to get pod group info: %v", err)
 			}
 
-			if diff := cmp.Diff(ref, result.WorkloadRef); diff != "" {
-				t.Errorf("Unexpected workload reference (-want,+got):\n%s", diff)
+			if diff := cmp.Diff(groupName, result.PodGroupInfo.Name); diff != "" {
+				t.Errorf("Unexpected pod group name (-want,+got):\n%s", diff)
 			}
 
 			var gotQueuedPods []string
@@ -378,20 +381,19 @@ func TestPodGroupCycle_UpdateSnapshotError(t *testing.T) {
 		},
 	}
 
-	sched.podGroupCycle(ctx, schedFwk, pgInfo, time.Now())
+	sched.podGroupCycle(ctx, schedFwk, pgInfo)
 
 	if !failureHandlerCalled {
 		t.Errorf("Expected FailureHandler to be called after UpdateSnapshot failed")
 	}
 }
 
-func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
+func TestPodGroupSchedulingAlgorithm(t *testing.T) {
 	testNode := st.MakeNode().Name("node1").UID("node1").Obj()
 
-	ref := &v1.WorkloadReference{Name: "workload", PodGroup: "pg"}
-	p1 := st.MakePod().Name("p1").UID("p1").WorkloadRef(ref).SchedulerName("test-scheduler").Obj()
-	p2 := st.MakePod().Name("p2").UID("p2").WorkloadRef(ref).SchedulerName("test-scheduler").Obj()
-	p3 := st.MakePod().Name("p3").UID("p3").WorkloadRef(ref).SchedulerName("test-scheduler").Obj()
+	p1 := st.MakePod().Name("p1").UID("p1").PodGroupName("pg").SchedulerName("test-scheduler").Obj()
+	p2 := st.MakePod().Name("p2").UID("p2").PodGroupName("pg").SchedulerName("test-scheduler").Obj()
+	p3 := st.MakePod().Name("p3").UID("p3").PodGroupName("pg").SchedulerName("test-scheduler").Obj()
 
 	qInfo1 := &framework.QueuedPodInfo{PodInfo: &framework.PodInfo{Pod: p1}, NeedsPodGroupScheduling: true}
 	qInfo2 := &framework.QueuedPodInfo{PodInfo: &framework.PodInfo{Pod: p2}, NeedsPodGroupScheduling: true}
@@ -400,10 +402,7 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 	pgInfo := &framework.QueuedPodGroupInfo{
 		QueuedPodInfos: []*framework.QueuedPodInfo{qInfo1, qInfo2, qInfo3},
 		PodGroupInfo: &framework.PodGroupInfo{
-			WorkloadRef: &v1.WorkloadReference{
-				Name:     "workload",
-				PodGroup: "pg",
-			},
+			Name:            "pg",
 			UnscheduledPods: []*v1.Pod{p1, p2, p3},
 		},
 	}
@@ -414,6 +413,7 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 		expectedGroupStatus podGroupAlgorithmStatus
 		expectedPodStatus   map[string]*fwk.Status
 		expectedPreemption  map[string]bool
+		skipForTAS          bool
 	}{
 		{
 			name: "All pods feasible",
@@ -555,6 +555,7 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 				"p2": true,
 				"p3": true,
 			},
+			skipForTAS: true,
 		},
 		{
 			name: "All pods require preemption, but waiting",
@@ -591,6 +592,8 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 				"p2": true,
 				"p3": true,
 			},
+			// preemption is not yet implemented for TAS
+			skipForTAS: true,
 		},
 		{
 			name: "One pod requires preemption, but waiting, two are feasible",
@@ -623,6 +626,8 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 				"p2": false,
 				"p3": false,
 			},
+			// preemption is not yet implemented for TAS
+			skipForTAS: true,
 		},
 		{
 			name: "One pod unschedulable, one requires preemption, one feasible",
@@ -656,6 +661,8 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 				"p2": false,
 				"p3": false,
 			},
+			// preemption is not yet implemented for TAS
+			skipForTAS: true,
 		},
 		{
 			name: "All pods unschedulable",
@@ -675,102 +682,114 @@ func TestPodGroupSchedulingDefaultAlgorithm(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			logger, ctx := ktesting.NewTestContext(t)
-
-			client := clientsetfake.NewClientset(testNode)
-			informerFactory := informers.NewSharedInformerFactory(client, 0)
-			queue := internalqueue.NewSchedulingQueue(nil, informerFactory)
-
-			registry := []tf.RegisterPluginFunc{
-				tf.RegisterFilterPlugin(tt.plugin.Name(), func(_ context.Context, _ runtime.Object, _ fwk.Handle) (fwk.Plugin, error) {
-					return tt.plugin, nil
-				}),
-				tf.RegisterPostFilterPlugin(tt.plugin.Name(), func(_ context.Context, _ runtime.Object, _ fwk.Handle) (fwk.Plugin, error) {
-					return tt.plugin, nil
-				}),
-				tf.RegisterPermitPlugin(tt.plugin.Name(), func(_ context.Context, _ runtime.Object, _ fwk.Handle) (fwk.Plugin, error) {
-					return tt.plugin, nil
-				}),
+	for _, tasEnabled := range []bool{true, false} {
+		for _, tt := range tests {
+			if tasEnabled && tt.skipForTAS {
+				continue
 			}
-			schedFwk, err := tf.NewFramework(ctx,
-				append(registry,
-					tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
-					tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
-				),
-				"test-scheduler",
-				frameworkruntime.WithClientSet(client),
-				frameworkruntime.WithEventRecorder(events.NewFakeRecorder(100)),
-				frameworkruntime.WithInformerFactory(informerFactory),
-				frameworkruntime.WithSnapshotSharedLister(internalcache.NewEmptySnapshot()),
-				frameworkruntime.WithPodNominator(queue),
-			)
-			if err != nil {
-				t.Fatalf("Failed to create new framework: %v", err)
-			}
-
-			cache := internalcache.New(ctx, nil)
-			cache.AddNode(logger, testNode)
-
-			sched := &Scheduler{
-				Cache:            cache,
-				nodeInfoSnapshot: internalcache.NewEmptySnapshot(),
-				SchedulingQueue:  queue,
-				Profiles:         profile.Map{"test-scheduler": schedFwk},
-			}
-			sched.SchedulePod = sched.schedulePod
-
-			if err := sched.Cache.UpdateSnapshot(logger, sched.nodeInfoSnapshot); err != nil {
-				t.Fatalf("Failed to update snapshot: %v", err)
-			}
-
-			result := sched.podGroupSchedulingDefaultAlgorithm(ctx, schedFwk, pgInfo)
-
-			if result.status != tt.expectedGroupStatus {
-				t.Errorf("Expected group status: %v, got: %v", tt.expectedGroupStatus, result.status)
-			}
-			for i, podResult := range result.podResults {
-				podName := pgInfo.QueuedPodInfos[i].Pod.Name
-				if expected, ok := tt.expectedPodStatus[podName]; ok {
-					if podResult.status.Code() != expected.Code() {
-						t.Errorf("Expected pod %s status code: %v, got: %v", podName, expected.Code(), podResult.status.Code())
-					}
+			name := fmt.Sprintf("%s (TopologyAwareWorkloadScheduling=%v)", tt.name, tasEnabled)
+			t.Run(name, func(t *testing.T) {
+				if tasEnabled {
+					featuregatetesting.SetFeatureGatesDuringTest(t, utilfeature.DefaultFeatureGate, featuregatetesting.FeatureOverrides{
+						features.TopologyAwareWorkloadScheduling: true,
+						features.GenericWorkload:                 true,
+					})
 				}
-				if podResult.status.IsSuccess() || podResult.requiresPreemption {
-					if podResult.scheduleResult.SuggestedHost != "node1" {
-						t.Errorf("Expected pod %s suggested host: node1, got: %v", podName, podResult.scheduleResult.SuggestedHost)
-					}
-					if expected, ok := tt.plugin.permitStatus[podName]; ok {
-						if podResult.permitStatus.Code() != expected.Code() {
-							t.Errorf("Expected pod %s permit status code: %v, got: %v", podName, expected.Code(), podResult.permitStatus.Code())
+
+				logger, ctx := ktesting.NewTestContext(t)
+
+				client := clientsetfake.NewClientset(testNode)
+				informerFactory := informers.NewSharedInformerFactory(client, 0)
+				queue := internalqueue.NewSchedulingQueue(nil, informerFactory)
+
+				registry := []tf.RegisterPluginFunc{
+					tf.RegisterFilterPlugin(tt.plugin.Name(), func(_ context.Context, _ runtime.Object, _ fwk.Handle) (fwk.Plugin, error) {
+						return tt.plugin, nil
+					}),
+					tf.RegisterPostFilterPlugin(tt.plugin.Name(), func(_ context.Context, _ runtime.Object, _ fwk.Handle) (fwk.Plugin, error) {
+						return tt.plugin, nil
+					}),
+					tf.RegisterPermitPlugin(tt.plugin.Name(), func(_ context.Context, _ runtime.Object, _ fwk.Handle) (fwk.Plugin, error) {
+						return tt.plugin, nil
+					}),
+				}
+				schedFwk, err := tf.NewFramework(ctx,
+					append(registry,
+						tf.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+						tf.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
+					),
+					"test-scheduler",
+					frameworkruntime.WithClientSet(client),
+					frameworkruntime.WithEventRecorder(events.NewFakeRecorder(100)),
+					frameworkruntime.WithInformerFactory(informerFactory),
+					frameworkruntime.WithSnapshotSharedLister(internalcache.NewEmptySnapshot()),
+					frameworkruntime.WithPodNominator(queue),
+				)
+				if err != nil {
+					t.Fatalf("Failed to create new framework: %v", err)
+				}
+
+				cache := internalcache.New(ctx, nil)
+				cache.AddNode(logger, testNode)
+
+				sched := &Scheduler{
+					Cache:            cache,
+					nodeInfoSnapshot: internalcache.NewEmptySnapshot(),
+					SchedulingQueue:  queue,
+					Profiles:         profile.Map{"test-scheduler": schedFwk},
+				}
+				sched.SchedulePod = sched.schedulePod
+
+				if err := sched.Cache.UpdateSnapshot(logger, sched.nodeInfoSnapshot); err != nil {
+					t.Fatalf("Failed to update snapshot: %v", err)
+				}
+
+				result := sched.podGroupSchedulingAlgorithm(ctx, schedFwk, pgInfo)
+
+				if result.status != tt.expectedGroupStatus {
+					t.Errorf("Expected group status: %v, got: %v", tt.expectedGroupStatus, result.status)
+				}
+				for i, podResult := range result.podResults {
+					podName := pgInfo.QueuedPodInfos[i].Pod.Name
+					if expected, ok := tt.expectedPodStatus[podName]; ok {
+						if podResult.status.Code() != expected.Code() {
+							t.Errorf("Expected pod %s status code: %v, got: %v", podName, expected.Code(), podResult.status.Code())
 						}
 					}
-				} else {
-					if podResult.scheduleResult.SuggestedHost != "" {
-						t.Errorf("Expected pod %s empty suggested host, got: %v", podName, podResult.scheduleResult.SuggestedHost)
+					if podResult.status.IsSuccess() || podResult.requiresPreemption {
+						if podResult.scheduleResult.SuggestedHost != "node1" {
+							t.Errorf("Expected pod %s suggested host: node1, got: %v", podName, podResult.scheduleResult.SuggestedHost)
+						}
+						if expected, ok := tt.plugin.permitStatus[podName]; ok {
+							if podResult.permitStatus.Code() != expected.Code() {
+								t.Errorf("Expected pod %s permit status code: %v, got: %v", podName, expected.Code(), podResult.permitStatus.Code())
+							}
+						}
+					} else {
+						if podResult.scheduleResult.SuggestedHost != "" {
+							t.Errorf("Expected pod %s empty suggested host, got: %v", podName, podResult.scheduleResult.SuggestedHost)
+						}
+						if podResult.permitStatus != nil {
+							t.Errorf("Expected pod %s nil permit status, got: %v", podName, podResult.permitStatus)
+						}
 					}
-					if podResult.permitStatus != nil {
-						t.Errorf("Expected pod %s nil permit status, got: %v", podName, podResult.permitStatus)
+					if expected, ok := tt.expectedPreemption[podName]; ok {
+						if podResult.requiresPreemption != expected {
+							t.Errorf("Expected pod %s requiresPreemption: %v, got: %v", podName, expected, podResult.requiresPreemption)
+						}
 					}
 				}
-				if expected, ok := tt.expectedPreemption[podName]; ok {
-					if podResult.requiresPreemption != expected {
-						t.Errorf("Expected pod %s requiresPreemption: %v, got: %v", podName, expected, podResult.requiresPreemption)
-					}
-				}
-			}
-		})
+			})
+		}
 	}
 }
 
 func TestSubmitPodGroupAlgorithmResult(t *testing.T) {
 	testNode := st.MakeNode().Name("node1").UID("node1").Obj()
 
-	ref := &v1.WorkloadReference{Name: "workload", PodGroup: "pg"}
-	p1 := st.MakePod().Name("p1").UID("p1").WorkloadRef(ref).SchedulerName("test-scheduler").Obj()
-	p2 := st.MakePod().Name("p2").UID("p2").WorkloadRef(ref).SchedulerName("test-scheduler").Obj()
-	p3 := st.MakePod().Name("p3").UID("p3").WorkloadRef(ref).SchedulerName("test-scheduler").Obj()
+	p1 := st.MakePod().Name("p1").UID("p1").PodGroupName("pg").SchedulerName("test-scheduler").Obj()
+	p2 := st.MakePod().Name("p2").UID("p2").PodGroupName("pg").SchedulerName("test-scheduler").Obj()
+	p3 := st.MakePod().Name("p3").UID("p3").PodGroupName("pg").SchedulerName("test-scheduler").Obj()
 
 	qInfo1 := &framework.QueuedPodInfo{PodInfo: &framework.PodInfo{Pod: p1}, NeedsPodGroupScheduling: true}
 	qInfo2 := &framework.QueuedPodInfo{PodInfo: &framework.PodInfo{Pod: p2}, NeedsPodGroupScheduling: true}

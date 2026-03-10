@@ -14575,19 +14575,17 @@ func TestValidatePodUpdate(t *testing.T) {
 			test: "memory limit change with pod-level resources",
 		}, {
 			new: *podtest.MakePod("pod",
-				podtest.SetWorkloadRef(&core.WorkloadReference{
-					Name:     "w",
-					PodGroup: "pg",
+				podtest.SetSchedulingGroup(&core.PodSchedulingGroup{
+					PodGroupName: new("pg1"),
 				}),
 			),
 			old: *podtest.MakePod("pod",
-				podtest.SetWorkloadRef(&core.WorkloadReference{
-					Name:     "w2",
-					PodGroup: "pg",
+				podtest.SetSchedulingGroup(&core.PodSchedulingGroup{
+					PodGroupName: new("pg2"),
 				}),
 			),
 			err:  "pod updates may not change fields other than",
-			test: "updated workloadRef",
+			test: "updated schedulingGroup",
 		},
 	}
 
@@ -23119,7 +23117,7 @@ func TestValidateOSFields(t *testing.T) {
 		"Overhead",
 		"Tolerations",
 		"TopologySpreadConstraints",
-		"WorkloadRef",
+		"SchedulingGroup",
 	)
 
 	expect := sets.NewString().Union(osSpecificFields).Union(osNeutralFields)
@@ -27976,6 +27974,103 @@ func TestValidateContainerStatusAllocatedResourcesStatus(t *testing.T) {
 				field.NotSupported(fldPath.Index(0).Child("allocatedResourcesStatus").Index(0).Child("resources").Index(0).Child("health"), core.ResourceHealthStatus("invalid-health-value"), []string{"Healthy", "Unhealthy", "Unknown"}),
 			},
 		},
+
+		"don't allow message longer than max length": {
+			containers: []core.Container{
+				{
+					Name: "container-1",
+					Resources: core.ResourceRequirements{
+						Requests: core.ResourceList{
+							"test.device/test": resource.MustParse("1"),
+						},
+					},
+				},
+			},
+			containerStatuses: []core.ContainerStatus{
+				{
+					Name: "container-1",
+					AllocatedResourcesStatus: []core.ResourceStatus{
+						{
+							Name: "test.device/test",
+							Resources: []core.ResourceHealth{
+								{
+									ResourceID: "resource-1",
+									Health:     core.ResourceHealthStatusHealthy,
+									Message:    ptr.To(string(make([]byte, v1.ResourceHealthMessageMaxLength+1))),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFieldErrors: field.ErrorList{
+				field.TooLong(fldPath.Index(0).Child("allocatedResourcesStatus").Index(0).Child("resources").Index(0).Child("message"), string(make([]byte, v1.ResourceHealthMessageMaxLength+1)), v1.ResourceHealthMessageMaxLength),
+			},
+		},
+
+		"allow message at exactly max length": {
+			containers: []core.Container{
+				{
+					Name: "container-1",
+					Resources: core.ResourceRequirements{
+						Requests: core.ResourceList{
+							"test.device/test": resource.MustParse("1"),
+						},
+					},
+				},
+			},
+			containerStatuses: []core.ContainerStatus{
+				{
+					Name: "container-1",
+					AllocatedResourcesStatus: []core.ResourceStatus{
+						{
+							Name: "test.device/test",
+							Resources: []core.ResourceHealth{
+								{
+									ResourceID: "resource-1",
+									Health:     core.ResourceHealthStatusHealthy,
+									Message:    ptr.To(string(make([]byte, v1.ResourceHealthMessageMaxLength))),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFieldErrors: field.ErrorList{},
+		},
+
+		"don't allow empty message": {
+			containers: []core.Container{
+				{
+					Name: "container-1",
+					Resources: core.ResourceRequirements{
+						Requests: core.ResourceList{
+							"test.device/test": resource.MustParse("1"),
+						},
+					},
+				},
+			},
+			containerStatuses: []core.ContainerStatus{
+				{
+					Name: "container-1",
+					AllocatedResourcesStatus: []core.ResourceStatus{
+						{
+							Name: "test.device/test",
+							Resources: []core.ResourceHealth{
+								{
+									ResourceID: "resource-1",
+									Health:     core.ResourceHealthStatusHealthy,
+									Message:    ptr.To(""),
+								},
+							},
+						},
+					},
+				},
+			},
+			wantFieldErrors: field.ErrorList{
+				field.Required(fldPath.Index(0).Child("allocatedResourcesStatus").Index(0).Child("resources").Index(0).Child("message"), "must be non-empty if specified"),
+			},
+		},
 	}
 	for name, tt := range testCases {
 		t.Run(name, func(t *testing.T) {
@@ -29606,6 +29701,44 @@ func TestValidateContainerRestartPolicy(t *testing.T) {
 				BadValue: core.ContainerRestartRuleOnExitCodesOperator(""),
 			}},
 		},
+		{
+			Name:          "restart-policy-rules with too many exit codes",
+			RestartPolicy: &containerRestartPolicyNever,
+			RestartPolicyRules: []core.ContainerRestartRule{{
+				Action: "Restart",
+				ExitCodes: &core.ContainerRestartRuleOnExitCodes{
+					Operator: "In",
+					Values:   make([]int32, 256),
+				},
+			}},
+			ExpectedErrors: field.ErrorList{{
+				Type:     field.ErrorTypeTooMany,
+				Field:    "containers[0].restartPolicyRules[0].exitCodes.values",
+				BadValue: 256,
+			}},
+		},
+		{
+			Name:          "restart-policy-rules with too many rules",
+			RestartPolicy: &containerRestartPolicyNever,
+			RestartPolicyRules: func() []core.ContainerRestartRule {
+				rules := make([]core.ContainerRestartRule, 21)
+				for i := range rules {
+					rules[i] = core.ContainerRestartRule{
+						Action: "Restart",
+						ExitCodes: &core.ContainerRestartRuleOnExitCodes{
+							Operator: "In",
+							Values:   []int32{42},
+						},
+					}
+				}
+				return rules
+			}(),
+			ExpectedErrors: field.ErrorList{{
+				Type:     field.ErrorTypeTooMany,
+				Field:    "containers[0].restartPolicyRules",
+				BadValue: 21,
+			}},
+		},
 	}
 
 	for _, tc := range errorCases {
@@ -30407,17 +30540,10 @@ func TestValidateNodeDeclaredFeatures(t *testing.T) {
 	}
 }
 
-func TestValidateWorkloadReference(t *testing.T) {
+func TestValidatePodSchedulingGroup(t *testing.T) {
 	successCases := map[string]*core.Pod{
-		"correct": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           "group",
-			PodGroupReplicaKey: "replica",
-		})),
-		"no replica key": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           "group",
-			PodGroupReplicaKey: "",
+		"correct": podtest.MakePod("", podtest.SetSchedulingGroup(&core.PodSchedulingGroup{
+			PodGroupName: new("group"),
 		})),
 	}
 	for name, pod := range successCases {
@@ -30428,45 +30554,15 @@ func TestValidateWorkloadReference(t *testing.T) {
 	}
 
 	failureCases := map[string]*core.Pod{
-		"empty workload name": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "",
-			PodGroup:           "group",
-			PodGroupReplicaKey: "replica",
+		"nil pod group name": podtest.MakePod("", podtest.SetSchedulingGroup(&core.PodSchedulingGroup{})),
+		"empty pod group name": podtest.MakePod("", podtest.SetSchedulingGroup(&core.PodSchedulingGroup{
+			PodGroupName: new(""),
 		})),
-		"incorrect workload name": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               ".workload",
-			PodGroup:           "group",
-			PodGroupReplicaKey: "replica",
+		"incorrect pod group name": podtest.MakePod("", podtest.SetSchedulingGroup(&core.PodSchedulingGroup{
+			PodGroupName: new(".podGroup"),
 		})),
-		"too long workload name": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               strings.Repeat("w", 254),
-			PodGroup:           "group",
-			PodGroupReplicaKey: "replica",
-		})),
-		"empty pod group": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           "",
-			PodGroupReplicaKey: "replica",
-		})),
-		"incorrect pod group": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           ".group",
-			PodGroupReplicaKey: "replica",
-		})),
-		"too long pod group": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           strings.Repeat("g", 64),
-			PodGroupReplicaKey: "replica",
-		})),
-		"incorrect replica key": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           "group",
-			PodGroupReplicaKey: ".replica",
-		})),
-		"too long replica key": podtest.MakePod("", podtest.SetWorkloadRef(&core.WorkloadReference{
-			Name:               "workload",
-			PodGroup:           "group",
-			PodGroupReplicaKey: strings.Repeat("r", 64),
+		"too long pod group name": podtest.MakePod("", podtest.SetSchedulingGroup(&core.PodSchedulingGroup{
+			PodGroupName: new(strings.Repeat("w", 254)),
 		})),
 	}
 	for name, pod := range failureCases {

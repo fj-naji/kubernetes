@@ -213,7 +213,7 @@ type VolumeSource struct {
 	// A failure to resolve or pull the image during pod startup will block containers from starting and may add significant latency. Failures will be retried using normal volume backoff and will be reported on the pod reason and message.
 	// The types of objects that may be mounted by this volume are defined by the container runtime implementation on a host machine and at minimum must include all valid types supported by the container image field.
 	// The OCI object gets mounted in a single directory (spec.containers[*].volumeMounts.mountPath) by merging the manifest layers in the same way as for container images.
-	// The volume will be mounted read-only (ro) and non-executable files (noexec).
+	// The volume will be mounted read-only (ro).
 	// Sub path mounts for containers are not supported (spec.containers[*].volumeMounts.subpath) before 1.33.
 	// The field spec.securityContext.fsGroupChangePolicy has no effect on this volume type.
 	// +featureGate=ImageVolume
@@ -3418,6 +3418,10 @@ const (
 	ResourceHealthStatusUnknown   ResourceHealthStatus = "Unknown"
 )
 
+// ResourceHealthMessageMaxLength is the maximum length for ResourceHealth.Message field.
+// Messages longer than this will be truncated with "..." appended.
+const ResourceHealthMessageMaxLength = 1024
+
 // ResourceID is calculated based on the source of this resource health information.
 // For DevicePlugin:
 //
@@ -3445,6 +3449,11 @@ type ResourceHealth struct {
 	//
 	// In future we may want to introduce the PermanentlyUnhealthy Status.
 	Health ResourceHealthStatus `json:"health,omitempty" protobuf:"bytes,2,name=health"`
+	// Message provides human-readable context for Health (e.g. "ECC error count exceeded threshold").
+	// This field is populated by the kubelet when ResourceHealthStatusMessage is enabled if the DRA plugin returns a message, and is null otherwise.
+	// +featureGate=ResourceHealthStatusMessage
+	// +optional
+	Message *string `json:"message,omitempty" protobuf:"bytes,6,opt,name=message"`
 }
 
 // ContainerUser represents user identity information
@@ -4458,17 +4467,27 @@ type PodSpec struct {
 	// +featureGate=HostnameOverride
 	// +optional
 	HostnameOverride *string `json:"hostnameOverride,omitempty" protobuf:"bytes,41,opt,name=hostnameOverride"`
-	// WorkloadRef provides a reference to the Workload object that this Pod belongs to.
-	// This field is used by the scheduler to identify the PodGroup and apply the
-	// correct group scheduling policies. The Workload object referenced
-	// by this field may not exist at the time the Pod is created.
-	// This field is immutable, but a Workload object with the same name
-	// may be recreated with different policies. Doing this during pod scheduling
+
+	// WorkloadRef is tombstoned to show why 42 is a reserved protobuf tag.
+	// This field got replaced with the SchedulingGroup field in Kubernetes 1.36.
+	// WorkloadRef *WorkloadReference `json:"workloadRef,omitempty" protobuf:"bytes,42,opt,name=workloadRef"`
+
+	// SchedulingGroup provides a reference to the immediate scheduling runtime
+	// grouping object that this Pod belongs to.
+	// This field is used by the scheduler to identify the group and apply the
+	// correct group scheduling policies. The association with a group also
+	// impacts other lifecycle aspects of a Pod that are relevant in a wider context
+	// of scheduling like preemption, resource attachment, etc. If not specified,
+	// the Pod is treated as a single unit in all of these aspects.
+	// The group object referenced by this field may not exist at the time the
+	// Pod is created.
+	// This field is immutable, but a group object with the same name may be
+	// recreated with different policies. Doing this during pod scheduling
 	// may result in the placement not conforming to the expected policies.
 	//
 	// +featureGate=GenericWorkload
 	// +optional
-	WorkloadRef *WorkloadReference `json:"workloadRef,omitempty" protobuf:"bytes,42,opt,name=workloadRef"`
+	SchedulingGroup *PodSchedulingGroup `json:"schedulingGroup,omitempty" protobuf:"bytes,43,opt,name=schedulingGroup"`
 }
 
 // PodResourceClaim references exactly one ResourceClaim, either directly
@@ -4580,34 +4599,18 @@ type PodSchedulingGate struct {
 	Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
 }
 
-// WorkloadReference identifies the Workload object and PodGroup membership
-// that a Pod belongs to. The scheduler uses this information to apply
-// workload-aware scheduling semantics.
-type WorkloadReference struct {
-	// Name defines the name of the Workload object this Pod belongs to.
-	// Workload must be in the same namespace as the Pod.
-	// If it doesn't match any existing Workload, the Pod will remain unschedulable
-	// until a Workload object is created and observed by the kube-scheduler.
-	// It must be a DNS subdomain.
-	//
-	// +required
-	Name string `json:"name" protobuf:"bytes,1,opt,name=name"`
-
-	// PodGroup is the name of the PodGroup within the Workload that this Pod
-	// belongs to. If it doesn't match any existing PodGroup within the Workload,
-	// the Pod will remain unschedulable until the Workload object is recreated
-	// and observed by the kube-scheduler. It must be a DNS label.
-	//
-	// +required
-	PodGroup string `json:"podGroup" protobuf:"bytes,2,opt,name=podGroup"`
-
-	// PodGroupReplicaKey specifies the replica key of the PodGroup to which this
-	// Pod belongs. It is used to distinguish pods belonging to different replicas
-	// of the same pod group. The pod group policy is applied separately to each replica.
-	// When set, it must be a DNS label.
+// PodSchedulingGroup identifies the runtime scheduling group instance that a Pod belongs to.
+// The scheduler uses this information to apply workload-aware scheduling semantics.
+// Exactly one field must be specified.
+// +union
+type PodSchedulingGroup struct {
+	// PodGroupName specifies the name of the standalone PodGroup object
+	// that represents the runtime instance of this group.
+	// Must be a DNS subdomain.
 	//
 	// +optional
-	PodGroupReplicaKey string `json:"podGroupReplicaKey,omitempty" protobuf:"bytes,3,opt,name=podGroupReplicaKey"`
+	// +oneOf=GroupSelection
+	PodGroupName *string `json:"podGroupName,omitempty" protobuf:"bytes,1,opt,name=podGroupName"`
 }
 
 // +enum
@@ -5550,18 +5553,18 @@ type ReplicationControllerSpec struct {
 	// Defaults to 1.
 	// More info: https://kubernetes.io/docs/concepts/workloads/controllers/replicationcontroller#what-is-a-replicationcontroller
 	// +optional
-	// +k8s:optional
+	// +k8s:alpha(since: "1.36")=+k8s:optional
 	// +default=1
-	// +k8s:minimum=0
+	// +k8s:alpha(since: "1.36")=+k8s:minimum=0
 	Replicas *int32 `json:"replicas,omitempty" protobuf:"varint,1,opt,name=replicas"`
 
 	// Minimum number of seconds for which a newly created pod should be ready
 	// without any of its container crashing, for it to be considered available.
 	// Defaults to 0 (pod will be considered available as soon as it is ready)
 	// +optional
-	// +k8s:optional
+	// +k8s:alpha(since: "1.36")=+k8s:optional
 	// +default=0
-	// +k8s:minimum=0
+	// +k8s:alpha(since: "1.36")=+k8s:minimum=0
 	MinReadySeconds int32 `json:"minReadySeconds,omitempty" protobuf:"varint,4,opt,name=minReadySeconds"`
 
 	// Selector is a label query over pods that should match the Replicas count.
@@ -5651,7 +5654,7 @@ type ReplicationControllerCondition struct {
 // +genclient:method=UpdateScale,verb=update,subresource=scale,input=k8s.io/api/autoscaling/v1.Scale,result=k8s.io/api/autoscaling/v1.Scale
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +k8s:prerelease-lifecycle-gen:introduced=1.0
-// +k8s:supportsSubresource=/scale
+// +k8s:supportsSubresource="/scale"
 
 // ReplicationController represents the configuration of a replication controller.
 type ReplicationController struct {
@@ -5661,8 +5664,8 @@ type ReplicationController struct {
 	// be the same as the Pod(s) that the replication controller manages.
 	// Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
 	// +optional
-	// +k8s:subfield(name)=+k8s:optional
-	// +k8s:subfield(name)=+k8s:format=k8s-long-name
+	// +k8s:alpha(since: "1.36")=+k8s:subfield(name)=+k8s:optional
+	// +k8s:alpha(since: "1.36")=+k8s:subfield(name)=+k8s:format=k8s-long-name
 	metav1.ObjectMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 
 	// Spec defines the specification of the desired behavior of the replication controller.

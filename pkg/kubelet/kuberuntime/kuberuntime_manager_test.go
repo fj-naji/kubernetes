@@ -358,8 +358,10 @@ func TestGetPodStatus(t *testing.T) {
 	// Set fake sandbox and faked containers to fakeRuntime.
 	makeAndSetFakePod(t, m, fakeRuntime, pod)
 
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 	assert.Equal(t, pod.UID, podStatus.ID)
 	assert.Equal(t, pod.Name, podStatus.Name)
 	assert.Equal(t, pod.Namespace, podStatus.Namespace)
@@ -397,7 +399,9 @@ func TestStopContainerWithNotFoundError(t *testing.T) {
 	// Set fake sandbox and faked containers to fakeRuntime.
 	makeAndSetFakePod(t, m, fakeRuntime, pod)
 	fakeRuntime.InjectError("StopContainer", status.Error(codes.NotFound, "No such container"))
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
 	require.NoError(t, err)
 	p := kubecontainer.ConvertPodStatusToRunningPod("", podStatus)
 	gracePeriod := int64(1)
@@ -436,7 +440,9 @@ func TestGetPodStatusWithNotFoundError(t *testing.T) {
 	// Set fake sandbox and faked containers to fakeRuntime.
 	makeAndSetFakePod(t, m, fakeRuntime, pod)
 	fakeRuntime.InjectError("ContainerStatus", status.Error(codes.NotFound, "No such container"))
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
 	require.NoError(t, err)
 	require.Equal(t, pod.UID, podStatus.ID)
 	require.Equal(t, pod.Name, podStatus.Name)
@@ -447,7 +453,7 @@ func TestGetPodStatusWithNotFoundError(t *testing.T) {
 func TestGetPods(t *testing.T) {
 	tCtx := ktesting.Init(t)
 	fakeRuntime, _, m, err := createTestRuntimeManager(tCtx)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -477,13 +483,16 @@ func TestGetPods(t *testing.T) {
 	for i := range containers {
 		fakeContainer := fakeContainers[i]
 		c, err := m.toKubeContainer(tCtx, &runtimeapi.Container{
-			Id:          fakeContainer.Id,
-			Metadata:    fakeContainer.Metadata,
-			State:       fakeContainer.State,
-			Image:       fakeContainer.Image,
-			ImageRef:    fakeContainer.ImageRef,
-			Labels:      fakeContainer.Labels,
-			Annotations: fakeContainer.Annotations,
+			Id:           fakeContainer.Id,
+			Metadata:     fakeContainer.Metadata,
+			State:        fakeContainer.State,
+			Image:        fakeContainer.Image,
+			ImageRef:     fakeContainer.ImageRef,
+			ImageId:      fakeContainer.ImageId,
+			Labels:       fakeContainer.Labels,
+			Annotations:  fakeContainer.Annotations,
+			PodSandboxId: fakeSandbox.Id,
+			CreatedAt:    fakeCreatedAt,
 		})
 		if err != nil {
 			t.Fatalf("unexpected error %v", err)
@@ -503,23 +512,29 @@ func TestGetPods(t *testing.T) {
 		t.Fatalf("unexpected error %v", err)
 	}
 
-	expected := []*kubecontainer.Pod{
-		{
-			ID:         types.UID("12345678"),
-			Name:       "foo",
-			Namespace:  "new",
-			CreatedAt:  uint64(fakeSandbox.CreatedAt),
-			Containers: []*kubecontainer.Container{containers[0], containers[1]},
-			Sandboxes:  []*kubecontainer.Container{sandbox},
-		},
+	expectedPod := &kubecontainer.Pod{
+		ID:         types.UID("12345678"),
+		Name:       "foo",
+		Namespace:  "new",
+		CreatedAt:  uint64(fakeSandbox.CreatedAt),
+		Containers: []*kubecontainer.Container{containers[0], containers[1]},
+		Sandboxes:  []*kubecontainer.Container{sandbox},
 	}
+	expected := []*kubecontainer.Pod{expectedPod}
 
 	actual, err := m.GetPods(tCtx, false)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	if !verifyPods(expected, actual) {
 		t.Errorf("expected %#v, got %#v", expected, actual)
 	}
+
+	actualPod, err := m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	assert.Equal(t, expectedPod, actualPod)
+
+	_, err = m.GetPod(tCtx, "non-existent-uid")
+	assert.ErrorIs(t, err, kubecontainer.ErrPodNotFound)
 }
 
 func TestGetPodsSorted(t *testing.T) {
@@ -761,8 +776,10 @@ func TestPruneInitContainers(t *testing.T) {
 	}
 	fakes := makeFakeContainers(t, m, templates)
 	fakeRuntime.SetFakeContainers(fakes)
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 
 	m.pruneInitContainersBeforeStart(tCtx, pod, podStatus)
 	expectedContainers := sets.New[string](fakes[0].Id, fakes[2].Id)
@@ -810,25 +827,35 @@ func TestSyncPodWithInitContainers(t *testing.T) {
 	backOff := flowcontrol.NewBackOff(time.Second, time.Minute)
 
 	// 1. should only create the init container.
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	if err != nil {
+		runtimePod = &kubecontainer.Pod{
+			ID:        pod.UID,
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		}
+	}
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 	result := m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
-	assert.NoError(t, result.Error())
+	require.NoError(t, result.Error())
 	expected := []*cRecord{
 		{name: initContainers[0].Name, attempt: 0, state: runtimeapi.ContainerState_CONTAINER_RUNNING},
 	}
 	verifyContainerStatuses(t, fakeRuntime, expected, "start only the init container")
 
 	// 2. should not create app container because init container is still running.
-	podStatus, err = m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err = m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err = m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 	result = m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
-	assert.NoError(t, result.Error())
+	require.NoError(t, result.Error())
 	verifyContainerStatuses(t, fakeRuntime, expected, "init container still running; do nothing")
 
 	// 3. should create all app containers because init container finished.
 	// Stop init container instance 0.
-	sandboxIDs, err := m.getSandboxIDByPodUID(tCtx, pod.UID, nil)
+	sandboxIDs, err := m.getSandboxIDByPodUID(tCtx, pod.UID)
 	require.NoError(t, err)
 	sandboxID := sandboxIDs[0]
 	initID0, err := fakeRuntime.GetContainerID(sandboxID, initContainers[0].Name, 0)
@@ -836,10 +863,12 @@ func TestSyncPodWithInitContainers(t *testing.T) {
 	err = fakeRuntime.StopContainer(tCtx, initID0, 0)
 	require.NoError(t, err)
 	// Sync again.
-	podStatus, err = m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err = m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err = m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 	result = m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
-	assert.NoError(t, result.Error())
+	require.NoError(t, result.Error())
 	expected = []*cRecord{
 		{name: initContainers[0].Name, attempt: 0, state: runtimeapi.ContainerState_CONTAINER_EXITED},
 		{name: containers[0].Name, attempt: 0, state: runtimeapi.ContainerState_CONTAINER_RUNNING},
@@ -852,10 +881,12 @@ func TestSyncPodWithInitContainers(t *testing.T) {
 	err = fakeRuntime.StopPodSandbox(tCtx, sandboxID)
 	require.NoError(t, err)
 	// Sync again.
-	podStatus, err = m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err = m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err = m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 	result = m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
-	assert.NoError(t, result.Error())
+	require.NoError(t, result.Error())
 	expected = []*cRecord{
 		// The first init container instance is purged and no longer visible.
 		// The second (attempt == 1) instance has been started and is running.
@@ -922,7 +953,15 @@ func TestSyncPodWithRestartAllContainers(t *testing.T) {
 	backOff := flowcontrol.NewBackOff(time.Second, time.Minute)
 
 	// 1. Run the pod first. First SyncPod should execute the init container.
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	if err != nil {
+		runtimePod = &kubecontainer.Pod{
+			ID:        pod.UID,
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		}
+	}
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
 	require.NoError(t, err)
 	result := m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
 	require.NoError(t, result.Error())
@@ -933,7 +972,7 @@ func TestSyncPodWithRestartAllContainers(t *testing.T) {
 
 	// 2. should run all app containers because init container finished.
 	// Stop init container instance 0.
-	sandboxIDs, err := m.getSandboxIDByPodUID(tCtx, pod.UID, nil)
+	sandboxIDs, err := m.getSandboxIDByPodUID(tCtx, pod.UID)
 	require.NoError(t, err)
 	sandboxID := sandboxIDs[0]
 	initID0, err := fakeRuntime.GetContainerID(sandboxID, initContainers[0].Name, 0)
@@ -941,7 +980,9 @@ func TestSyncPodWithRestartAllContainers(t *testing.T) {
 	err = fakeRuntime.StopContainer(tCtx, initID0, 0)
 	require.NoError(t, err)
 	// Sync again.
-	podStatus, err = m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
+	runtimePod, err = m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err = m.GetPodStatus(tCtx, runtimePod)
 	require.NoError(t, err)
 	result = m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
 	require.NoError(t, result.Error())
@@ -954,7 +995,7 @@ func TestSyncPodWithRestartAllContainers(t *testing.T) {
 
 	// 3. Exits the container foo2 with code 42, the pod should be marked for RestartAllContainers, and
 	// should remove all containers.
-	sandboxIDs, err = m.getSandboxIDByPodUID(tCtx, pod.UID, nil)
+	sandboxIDs, err = m.getSandboxIDByPodUID(tCtx, pod.UID)
 	require.NoError(t, err)
 	sandboxID = sandboxIDs[0]
 	foo2ID, err := fakeRuntime.GetContainerID(sandboxID, containers[1].Name, 0)
@@ -964,7 +1005,9 @@ func TestSyncPodWithRestartAllContainers(t *testing.T) {
 	failedFoo2.ExitCode = 42
 	fakeRuntime.Containers[foo2ID] = failedFoo2
 
-	podStatus, err = m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
+	runtimePod, err = m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err = m.GetPodStatus(tCtx, runtimePod)
 	require.NoError(t, err)
 	result = m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, true)
 	require.NoError(t, result.Error())
@@ -972,7 +1015,9 @@ func TestSyncPodWithRestartAllContainers(t *testing.T) {
 	verifyContainerStatuses(t, fakeRuntime, expected, "kill all containers")
 
 	// 4. Unmark the pod. Now it should start the init container first.
-	podStatus, err = m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
+	runtimePod, err = m.GetPod(tCtx, pod.UID)
+	require.NoError(t, err)
+	podStatus, err = m.GetPodStatus(tCtx, runtimePod)
 	require.NoError(t, err)
 	result = m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
 	require.NoError(t, result.Error())
@@ -2738,11 +2783,19 @@ func TestSyncPodWithSandboxAndDeletedPod(t *testing.T) {
 	// GetPodStatus and the following SyncPod will not return errors in the
 	// case where the pod has been deleted. We are not adding any pods into
 	// the fakePodProvider so they are 'deleted'.
-	podStatus, err := m.GetPodStatus(tCtx, pod.UID, pod.Name, pod.Namespace)
-	assert.NoError(t, err)
+	runtimePod, err := m.GetPod(tCtx, pod.UID)
+	if err != nil {
+		runtimePod = &kubecontainer.Pod{
+			ID:        pod.UID,
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		}
+	}
+	podStatus, err := m.GetPodStatus(tCtx, runtimePod)
+	require.NoError(t, err)
 	result := m.SyncPod(tCtx, pod, podStatus, []v1.Secret{}, backOff, false)
 	// This will return an error if the pod has _not_ been deleted.
-	assert.NoError(t, result.Error())
+	require.NoError(t, result.Error())
 }
 
 func makeBasePodAndStatusWithInitAndEphemeralContainers() (*v1.Pod, *kubecontainer.PodStatus) {
@@ -2912,11 +2965,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
@@ -2926,11 +2979,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
@@ -2984,11 +3037,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
@@ -2998,11 +3051,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
@@ -3060,11 +3113,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem600M.Value(),
 									cpuLimit:    cpu600m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem300M.Value(),
 									cpuLimit:    cpu300m.MilliValue(),
 								},
@@ -3074,11 +3127,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem600M.Value(),
 									cpuLimit:    cpu600m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem300M.Value(),
 									cpuLimit:    cpu300m.MilliValue(),
 								},
@@ -3172,11 +3225,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
@@ -3186,11 +3239,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
@@ -3225,11 +3278,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
@@ -3264,11 +3317,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[2],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
@@ -3404,11 +3457,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[1],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem200M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
@@ -3444,11 +3497,11 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[2],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu200m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit: mem100M.Value(),
 									cpuLimit:    cpu100m.MilliValue(),
 								},
@@ -3530,13 +3583,13 @@ func TestComputePodActionsForPodResize(t *testing.T) {
 							{
 								container:       &pod.Spec.Containers[2],
 								kubeContainerID: kcs.ID,
-								desiredContainerResources: containerResources{
+								desiredContainerResources: resourceRequirements{
 									memoryLimit:   mem200M.Value(),
 									memoryRequest: mem100M.Value(),
 									cpuLimit:      cpu200m.MilliValue(),
 									cpuRequest:    cpu100m.MilliValue(),
 								},
-								currentContainerResources: &containerResources{
+								currentContainerResources: &resourceRequirements{
 									memoryLimit:   mem200M.Value(),
 									memoryRequest: mem200M.Value(),
 									cpuLimit:      cpu200m.MilliValue(),
@@ -3664,13 +3717,13 @@ func TestUpdatePodContainerResources(t *testing.T) {
 				return containerToUpdateInfo{
 					container:       container,
 					kubeContainerID: kubecontainer.ContainerID{},
-					desiredContainerResources: containerResources{
+					desiredContainerResources: resourceRequirements{
 						memoryLimit:   tc.apiSpecResources[idx].Limits.Memory().Value(),
 						memoryRequest: tc.apiSpecResources[idx].Requests.Memory().Value(),
 						cpuLimit:      tc.apiSpecResources[idx].Limits.Cpu().MilliValue(),
 						cpuRequest:    tc.apiSpecResources[idx].Requests.Cpu().MilliValue(),
 					},
-					currentContainerResources: &containerResources{
+					currentContainerResources: &resourceRequirements{
 						memoryLimit:   tc.apiStatusResources[idx].Limits.Memory().Value(),
 						memoryRequest: tc.apiStatusResources[idx].Requests.Memory().Value(),
 						cpuLimit:      tc.apiStatusResources[idx].Limits.Cpu().MilliValue(),
@@ -3864,8 +3917,8 @@ func TestDoPodResizeAction(t *testing.T) {
 
 	for i, tc := range []struct {
 		testName                  string
-		currentResources          containerResources
-		desiredResources          containerResources
+		currentResources          resourceRequirements
+		desiredResources          resourceRequirements
 		updatedResources          []v1.ResourceName
 		otherContainersHaveLimits bool
 		runtimeErrors             map[string][]error
@@ -3875,11 +3928,11 @@ func TestDoPodResizeAction(t *testing.T) {
 	}{
 		{
 			testName: "Increase cpu and memory requests and limits, with computed pod limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest: 100, cpuLimit: 100,
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest: 200, cpuLimit: 200,
 				memoryRequest: 200, memoryLimit: 200,
 			},
@@ -3889,11 +3942,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Increase cpu and memory requests and limits, with computed pod limits and set a runtime error",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest: 100, cpuLimit: 100,
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest: 200, cpuLimit: 200,
 				memoryRequest: 200, memoryLimit: 200,
 			},
@@ -3906,11 +3959,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Increase cpu and memory requests and limits, without computed pod limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest: 100, cpuLimit: 100,
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest: 200, cpuLimit: 200,
 				memoryRequest: 200, memoryLimit: 200,
 			},
@@ -3921,11 +3974,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Increase cpu and memory requests only",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest: 100, cpuLimit: 200,
 				memoryRequest: 100, memoryLimit: 200,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest: 150, cpuLimit: 200,
 				memoryRequest: 150, memoryLimit: 200,
 			},
@@ -3934,11 +3987,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Resize memory request no limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 200,
 			},
@@ -3947,11 +4000,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Resize cpu request no limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest:    200,
 				memoryRequest: 100,
 			},
@@ -3960,11 +4013,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest: 100, cpuLimit: 100,
 				memoryRequest: 100, memoryLimit: 100,
 			},
@@ -3973,11 +4026,11 @@ func TestDoPodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add limits and pod limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest: 100, cpuLimit: 100,
 				memoryRequest: 100, memoryLimit: 100,
 			},
@@ -4103,18 +4156,18 @@ func TestValidatePodResizeAction(t *testing.T) {
 
 	for _, tc := range []struct {
 		testName                               string
-		currentResources, desiredResources     containerResources
+		currentResources, desiredResources     resourceRequirements
 		currentPodMemLimit, desiredPodMemLimit *int64
 		containerMemoryUsage, podMemoryUsage   *uint64
 		expectedError                          bool
 	}{
 		{
 			testName: "Resize memory request no limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				cpuRequest:    100,
 				memoryRequest: 200,
 			},
@@ -4122,10 +4175,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add container limits, low usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			containerMemoryUsage: ptr.To[uint64](10),
@@ -4134,10 +4187,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add container limits, high usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			containerMemoryUsage: ptr.To[uint64](200),
@@ -4146,10 +4199,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add container limits, missing container usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			podMemoryUsage: ptr.To[uint64](10),
@@ -4157,10 +4210,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add container limits, missing pod usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			containerMemoryUsage: ptr.To[uint64](10),
@@ -4168,20 +4221,20 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Increase container limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 200,
 			},
 			expectedError: false,
 		},
 		{
 			testName: "Decrease container limits, low usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 200,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			containerMemoryUsage: ptr.To[uint64](20),
@@ -4190,10 +4243,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Decrease container limits, high usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 200,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			containerMemoryUsage: ptr.To[uint64](150),
@@ -4202,10 +4255,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add pod limit, low usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			desiredPodMemLimit:   ptr.To[int64](100),
@@ -4215,10 +4268,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Add pod limit, high usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			desiredPodMemLimit:   ptr.To[int64](100),
@@ -4228,10 +4281,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Increase pod limits",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			currentPodMemLimit:   ptr.To[int64](100),
@@ -4242,10 +4295,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Decrease pod limits, low usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			currentPodMemLimit:   ptr.To[int64](200),
@@ -4256,10 +4309,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Decrease pod limits, high usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			currentPodMemLimit:   ptr.To[int64](200),
@@ -4270,10 +4323,10 @@ func TestValidatePodResizeAction(t *testing.T) {
 		},
 		{
 			testName: "Decrease pod limits, missing usage",
-			currentResources: containerResources{
+			currentResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
-			desiredResources: containerResources{
+			desiredResources: resourceRequirements{
 				memoryRequest: 100, memoryLimit: 100,
 			},
 			currentPodMemLimit:   ptr.To[int64](200),

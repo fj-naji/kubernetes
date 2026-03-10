@@ -54,7 +54,6 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	cloudprovider "k8s.io/cloud-provider"
-	netutils "k8s.io/utils/net"
 	"k8s.io/utils/ptr"
 
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
@@ -151,7 +150,7 @@ func affinityCheckFromTest(ctx context.Context, cs clientset.Interface, serviceI
 	params := &e2enetwork.HTTPPokeParams{Timeout: 2 * time.Second}
 	getHosts := func() []string {
 		var hosts []string
-		for i := 0; i < AffinityConfirmCount; i++ {
+		for range AffinityConfirmCount {
 			result := e2enetwork.PokeHTTP(serviceIP, servicePort, "", params)
 			if result.Status == e2enetwork.HTTPSuccess {
 				hosts = append(hosts, string(result.Body))
@@ -699,16 +698,17 @@ func waitForAPIServerUp(ctx context.Context, c clientset.Interface) error {
 // getEndpointNodesWithInternalIP returns a map of nodenames:internal-ip on which the
 // endpoints of the Service are running.
 func getEndpointNodesWithInternalIP(ctx context.Context, jig *e2eservice.TestJig) (map[string]string, error) {
-	nodesWithIPs, err := jig.GetEndpointNodesWithIP(ctx, v1.NodeInternalIP)
+	nodes, err := jig.ListNodesWithEndpoint(ctx)
 	if err != nil {
 		return nil, err
 	}
-	endpointsNodeMap := make(map[string]string, len(nodesWithIPs))
-	for nodeName, internalIPs := range nodesWithIPs {
+	endpointsNodeMap := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		internalIPs := e2enode.GetAddresses(&node, v1.NodeInternalIP)
 		if len(internalIPs) < 1 {
-			return nil, fmt.Errorf("no internal ip found for node %s", nodeName)
+			return nil, fmt.Errorf("no internal ip found for node %s", node.Name)
 		}
-		endpointsNodeMap[nodeName] = internalIPs[0]
+		endpointsNodeMap[node.Name] = internalIPs[0]
 	}
 	return endpointsNodeMap, nil
 }
@@ -1713,7 +1713,7 @@ var _ = common.SIGDescribe("Services", func() {
 		numberOfRetries := 5
 		ginkgo.By("creating service " + serviceName + " with type NodePort in namespace " + ns)
 		var err error
-		for i := 0; i < numberOfRetries; i++ {
+		for range numberOfRetries {
 			port, err := e2eservice.GetUnusedStaticNodePort()
 			framework.ExpectNoError(err, "Static node port allocator was not able to find a free nodeport.")
 			baseService.Spec.Ports[0].NodePort = port
@@ -2057,7 +2057,7 @@ var _ = common.SIGDescribe("Services", func() {
 		nodePortAddress0 := net.JoinHostPort(nodeIPs0[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
 		nodePortAddress1 := net.JoinHostPort(nodeIPs1[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
 		// connect 3 times every 5 seconds to the Service with the unready and terminating endpoint
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			execHostnameTest(*pausePod1, clusterIPAddress, webserverPod0.Name)
 			execHostnameTest(*pausePod1, nodePortAddress0, webserverPod0.Name)
 			execHostnameTest(*pausePod1, nodePortAddress1, webserverPod0.Name)
@@ -2200,7 +2200,7 @@ var _ = common.SIGDescribe("Services", func() {
 
 		clusterIPAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
 		// connect 3 times every 5 seconds to the Service and expect a failure
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			cmd = fmt.Sprintf(`curl -q -s --connect-timeout 5 %s/hostname`, clusterIPAddress)
 			_, err := e2eoutput.RunHostCmd(pausePod1.Namespace, pausePod1.Name, cmd)
 			gomega.Expect(err).To(gomega.HaveOccurred(), "expected error when trying to connect to cluster IP")
@@ -2583,7 +2583,7 @@ var _ = common.SIGDescribe("Services", func() {
 
 		// assert 5 times that the first pause pod can connect to the Service locally and the second one errors with a timeout
 		serviceAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// the first pause pod should be on the same node as the webserver, so it can connect to the local pod using clusterIP
 			execHostnameTest(*pausePod0, serviceAddress, webserverPod0.Name)
 
@@ -2654,7 +2654,7 @@ var _ = common.SIGDescribe("Services", func() {
 
 		// assert 5 times that the first pause pod can connect to the Service locally and the second one errors with a timeout
 		serviceAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// the first pause pod should be on the same node as the webserver, so it can connect to the local pod using clusterIP
 			execHostnameTest(*pausePod0, serviceAddress, webserverPod0.Name)
 
@@ -2727,7 +2727,7 @@ var _ = common.SIGDescribe("Services", func() {
 
 		// assert 5 times that the first pause pod can connect to the Service locally and the second one errors with a timeout
 		serviceAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// the first pause pod should be on the same node as the webserver, so it can connect to the local pod using clusterIP
 			// note that the expected hostname is the node name because the backend pod is on host network
 			execHostnameTest(*pausePod0, serviceAddress, node0.Name)
@@ -2756,7 +2756,7 @@ var _ = common.SIGDescribe("Services", func() {
 		framework.ExpectNoError(e2epod.WaitTimeoutForPodReadyInNamespace(ctx, f.ClientSet, pausePod3.Name, f.Namespace.Name, framework.PodStartTimeout))
 
 		// assert 5 times that the first pause pod can connect to the Service locally and the second one errors with a timeout
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// the first pause pod should be on the same node as the webserver, so it can connect to the local pod using clusterIP
 			// note that the expected hostname is the node name because the backend pod is on host network
 			execHostnameTest(*pausePod2, serviceAddress, node0.Name)
@@ -2978,7 +2978,7 @@ var _ = common.SIGDescribe("Services", func() {
 
 		// assert 5 times that both the local and remote pod can connect to the Service while all endpoints are terminating
 		serviceAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// There's a Service with internalTrafficPolicy=Cluster,
 			// with a single endpoint (which is terminating) called webserver0 running on node0.
 			// pausePod0 and pausePod1 are on node0 and node1 respectively.
@@ -3054,7 +3054,7 @@ var _ = common.SIGDescribe("Services", func() {
 
 		// assert 5 times that the first pause pod can connect to the Service locally and the second one errors with a timeout
 		serviceAddress := net.JoinHostPort(svc.Spec.ClusterIP, strconv.Itoa(servicePort))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// There's a Service with internalTrafficPolicy=Local,
 			// with a single endpoint (which is terminating) called webserver0 running on node0.
 			// pausePod0 and pausePod1 are on node0 and node1 respectively.
@@ -3133,7 +3133,7 @@ var _ = common.SIGDescribe("Services", func() {
 		// assert 5 times that both the local and remote pod can connect to the Service NodePort while all endpoints are terminating
 		nodeIPs := e2enode.GetAddresses(&node0, v1.NodeInternalIP)
 		nodePortAddress := net.JoinHostPort(nodeIPs[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// There's a Service Type=NodePort with externalTrafficPolicy=Cluster,
 			// with a single endpoint (which is terminating) called webserver0 running on node0.
 			// pausePod0 and pausePod1 are on node0 and node1 respectively.
@@ -3212,7 +3212,7 @@ var _ = common.SIGDescribe("Services", func() {
 		nodeIPs1 := e2enode.GetAddresses(&node1, v1.NodeInternalIP)
 		nodePortAddress0 := net.JoinHostPort(nodeIPs0[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
 		nodePortAddress1 := net.JoinHostPort(nodeIPs1[0], strconv.Itoa(int(svc.Spec.Ports[0].NodePort)))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			// There's a Service Type=NodePort with externalTrafficPolicy=Local,
 			// with a single endpoint (which is terminating) called webserver0 running on node0.
 			// pausePod0 and pausePod1 are on node0 and node1 respectively.
@@ -3848,7 +3848,7 @@ var _ = common.SIGDescribe("Services", func() {
 		ginkgo.By("creating the service")
 		var svc *v1.Service
 		numberOfRetries := 5
-		for i := 0; i < numberOfRetries; i++ {
+		for range numberOfRetries {
 			port, err := e2eservice.GetUnusedStaticNodePort()
 			framework.ExpectNoError(err, "Static node port allocator was not able to find a free nodeport.")
 			svc, err = jig.CreateLoadBalancerServiceWaitForClusterIPOnly(func(svc *v1.Service) {
@@ -4210,10 +4210,7 @@ func execAffinityTestForSessionAffinityTimeout(ctx context.Context, f *framework
 		nodes, err := e2enode.GetReadySchedulableNodes(ctx, cs)
 		framework.ExpectNoError(err)
 		// The node addresses must have the same IP family as the ClusterIP
-		family := v1.IPv4Protocol
-		if netutils.IsIPv6String(svc.Spec.ClusterIP) {
-			family = v1.IPv6Protocol
-		}
+		family := svc.Spec.IPFamilies[0]
 		svcIP = e2enode.FirstAddressByTypeAndFamily(nodes, v1.NodeInternalIP, family)
 		if svcIP == "" {
 			svcIP = e2enode.FirstAddressByTypeAndFamily(nodes, v1.NodeExternalIP, family)
@@ -4241,7 +4238,7 @@ func execAffinityTestForSessionAffinityTimeout(ctx context.Context, f *framework
 	// try several times to avoid the probability that we hit the same pod twice
 	hosts := sets.NewString()
 	cmd := fmt.Sprintf(`curl -q -s --connect-timeout 2 http://%s/`, net.JoinHostPort(svcIP, strconv.Itoa(servicePort)))
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		hostname, err := e2eoutput.RunHostCmd(execPod.Namespace, execPod.Name, cmd)
 		if err == nil {
 			hosts.Insert(hostname)
@@ -4296,10 +4293,7 @@ func execAffinityTestForNonLBServiceWithOptionalTransition(ctx context.Context, 
 		nodes, err := e2enode.GetReadySchedulableNodes(ctx, cs)
 		framework.ExpectNoError(err)
 		// The node addresses must have the same IP family as the ClusterIP
-		family := v1.IPv4Protocol
-		if netutils.IsIPv6String(svc.Spec.ClusterIP) {
-			family = v1.IPv6Protocol
-		}
+		family := svc.Spec.IPFamilies[0]
 		svcIP = e2enode.FirstAddressByTypeAndFamily(nodes, v1.NodeInternalIP, family)
 		if svcIP == "" {
 			svcIP = e2enode.FirstAddressByTypeAndFamily(nodes, v1.NodeExternalIP, family)

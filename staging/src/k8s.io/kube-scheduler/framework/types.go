@@ -170,7 +170,7 @@ const (
 	ResourceClaim         EventResource = "resource.k8s.io/ResourceClaim"
 	ResourceSlice         EventResource = "resource.k8s.io/ResourceSlice"
 	DeviceClass           EventResource = "resource.k8s.io/DeviceClass"
-	Workload              EventResource = "scheduling.k8s.io/Workload"
+	PodGroup              EventResource = "scheduling.k8s.io/PodGroup"
 
 	// WildCard is a special EventResource to match all resources.
 	// e.g., If you register `{Resource: "*", ActionType: All}` in EventsToRegister,
@@ -635,4 +635,17 @@ func (h HostPortInfo) sanitize(ip, protocol *string) {
 	if len(*protocol) == 0 {
 		*protocol = string(v1.ProtocolTCP)
 	}
+}
+
+// Placement determines the resources to be considered when scheduling a pod group.
+// Pod group scheduling cycle can check multiple placements and select the one that results
+// in the best pod assignments.
+type Placement struct {
+	// Name uniquely identifies the placement.
+	// This is used for diagnostics and debugability.
+	// The choice of the name is up to the PlacementGeneratePlugin.
+	Name string
+	// Nodes specifies the nodes that are valid for this placement.
+	// Scheduler will try to schedule the pod group using only those nodes.
+	Nodes []NodeInfo
 }

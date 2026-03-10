@@ -5623,6 +5623,23 @@
         ],
         "type": "object"
       },
+      "io.k8s.api.core.v1.PodSchedulingGroup": {
+        "description": "PodSchedulingGroup identifies the runtime scheduling group instance that a Pod belongs to. The scheduler uses this information to apply workload-aware scheduling semantics. Exactly one field must be specified.",
+        "properties": {
+          "podGroupName": {
+            "description": "PodGroupName specifies the name of the standalone PodGroup object that represents the runtime instance of this group. Must be a DNS subdomain.",
+            "type": "string"
+          }
+        },
+        "type": "object",
+        "x-kubernetes-unions": [
+          {
+            "fields-to-discriminateBy": {
+              "podGroupName": "PodGroupName"
+            }
+          }
+        ]
+      },
       "io.k8s.api.core.v1.PodSecurityContext": {
         "description": "PodSecurityContext holds pod-level security attributes and common container settings. Some fields are also present in container.securityContext.  Field values of container.securityContext take precedence over field values of PodSecurityContext.",
         "properties": {
@@ -5975,6 +5992,14 @@
             "x-kubernetes-patch-merge-key": "name",
             "x-kubernetes-patch-strategy": "merge"
           },
+          "schedulingGroup": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.api.core.v1.PodSchedulingGroup"
+              }
+            ],
+            "description": "SchedulingGroup provides a reference to the immediate scheduling runtime grouping object that this Pod belongs to. This field is used by the scheduler to identify the group and apply the correct group scheduling policies. The association with a group also impacts other lifecycle aspects of a Pod that are relevant in a wider context of scheduling like preemption, resource attachment, etc. If not specified, the Pod is treated as a single unit in all of these aspects. The group object referenced by this field may not exist at the time the Pod is created. This field is immutable, but a group object with the same name may be recreated with different policies. Doing this during pod scheduling may result in the placement not conforming to the expected policies."
+          },
           "securityContext": {
             "allOf": [
               {
@@ -6057,14 +6082,6 @@
             "x-kubernetes-list-type": "map",
             "x-kubernetes-patch-merge-key": "name",
             "x-kubernetes-patch-strategy": "merge,retainKeys"
-          },
-          "workloadRef": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/io.k8s.api.core.v1.WorkloadReference"
-              }
-            ],
-            "description": "WorkloadRef provides a reference to the Workload object that this Pod belongs to. This field is used by the scheduler to identify the PodGroup and apply the correct group scheduling policies. The Workload object referenced by this field may not exist at the time the Pod is created. This field is immutable, but a Workload object with the same name may be recreated with different policies. Doing this during pod scheduling may result in the placement not conforming to the expected policies."
           }
         },
         "required": [
@@ -6939,6 +6956,10 @@
         "properties": {
           "health": {
             "description": "Health of the resource. can be one of:\n - Healthy: operates as normal\n - Unhealthy: reported unhealthy. We consider this a temporary health issue\n              since we do not have a mechanism today to distinguish\n              temporary and permanent issues.\n - Unknown: The status cannot be determined.\n            For example, Device Plugin got unregistered and hasn't been re-registered since.\n\nIn future we may want to introduce the PermanentlyUnhealthy Status.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Message provides human-readable context for Health (e.g. \"ECC error count exceeded threshold\"). This field is populated by the kubelet when ResourceHealthStatusMessage is enabled if the DRA plugin returns a message, and is null otherwise.",
             "type": "string"
           },
           "resourceID": {
@@ -8540,7 +8561,7 @@
                 "$ref": "#/components/schemas/io.k8s.api.core.v1.ImageVolumeSource"
               }
             ],
-            "description": "image represents an OCI object (a container image or artifact) pulled and mounted on the kubelet's host machine. The volume is resolved at pod startup depending on which PullPolicy value is provided:\n\n- Always: the kubelet always attempts to pull the reference. Container creation will fail If the pull fails. - Never: the kubelet never pulls the reference and only uses a local image or artifact. Container creation will fail if the reference isn't present. - IfNotPresent: the kubelet pulls if the reference isn't already present on disk. Container creation will fail if the reference isn't present and the pull fails.\n\nThe volume gets re-resolved if the pod gets deleted and recreated, which means that new remote content will become available on pod recreation. A failure to resolve or pull the image during pod startup will block containers from starting and may add significant latency. Failures will be retried using normal volume backoff and will be reported on the pod reason and message. The types of objects that may be mounted by this volume are defined by the container runtime implementation on a host machine and at minimum must include all valid types supported by the container image field. The OCI object gets mounted in a single directory (spec.containers[*].volumeMounts.mountPath) by merging the manifest layers in the same way as for container images. The volume will be mounted read-only (ro) and non-executable files (noexec). Sub path mounts for containers are not supported (spec.containers[*].volumeMounts.subpath) before 1.33. The field spec.securityContext.fsGroupChangePolicy has no effect on this volume type."
+            "description": "image represents an OCI object (a container image or artifact) pulled and mounted on the kubelet's host machine. The volume is resolved at pod startup depending on which PullPolicy value is provided:\n\n- Always: the kubelet always attempts to pull the reference. Container creation will fail If the pull fails. - Never: the kubelet never pulls the reference and only uses a local image or artifact. Container creation will fail if the reference isn't present. - IfNotPresent: the kubelet pulls if the reference isn't already present on disk. Container creation will fail if the reference isn't present and the pull fails.\n\nThe volume gets re-resolved if the pod gets deleted and recreated, which means that new remote content will become available on pod recreation. A failure to resolve or pull the image during pod startup will block containers from starting and may add significant latency. Failures will be retried using normal volume backoff and will be reported on the pod reason and message. The types of objects that may be mounted by this volume are defined by the container runtime implementation on a host machine and at minimum must include all valid types supported by the container image field. The OCI object gets mounted in a single directory (spec.containers[*].volumeMounts.mountPath) by merging the manifest layers in the same way as for container images. The volume will be mounted read-only (ro). Sub path mounts for containers are not supported (spec.containers[*].volumeMounts.subpath) before 1.33. The field spec.securityContext.fsGroupChangePolicy has no effect on this volume type."
           },
           "iscsi": {
             "allOf": [
@@ -8919,30 +8940,6 @@
             "type": "string"
           }
         },
-        "type": "object"
-      },
-      "io.k8s.api.core.v1.WorkloadReference": {
-        "description": "WorkloadReference identifies the Workload object and PodGroup membership that a Pod belongs to. The scheduler uses this information to apply workload-aware scheduling semantics.",
-        "properties": {
-          "name": {
-            "default": "",
-            "description": "Name defines the name of the Workload object this Pod belongs to. Workload must be in the same namespace as the Pod. If it doesn't match any existing Workload, the Pod will remain unschedulable until a Workload object is created and observed by the kube-scheduler. It must be a DNS subdomain.",
-            "type": "string"
-          },
-          "podGroup": {
-            "default": "",
-            "description": "PodGroup is the name of the PodGroup within the Workload that this Pod belongs to. If it doesn't match any existing PodGroup within the Workload, the Pod will remain unschedulable until the Workload object is recreated and observed by the kube-scheduler. It must be a DNS label.",
-            "type": "string"
-          },
-          "podGroupReplicaKey": {
-            "description": "PodGroupReplicaKey specifies the replica key of the PodGroup to which this Pod belongs. It is used to distinguish pods belonging to different replicas of the same pod group. The pod group policy is applied separately to each replica. When set, it must be a DNS label.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "podGroup"
-        ],
         "type": "object"
       },
       "io.k8s.api.policy.v1.Eviction": {
@@ -9475,7 +9472,7 @@
           {
             "group": "scheduling.k8s.io",
             "kind": "DeleteOptions",
-            "version": "v1alpha1"
+            "version": "v1alpha2"
           },
           {
             "group": "scheduling.k8s.io",
@@ -10220,7 +10217,7 @@
           {
             "group": "scheduling.k8s.io",
             "kind": "WatchEvent",
-            "version": "v1alpha1"
+            "version": "v1alpha2"
           },
           {
             "group": "scheduling.k8s.io",

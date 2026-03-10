@@ -147,7 +147,7 @@ func TestDRA(t *testing.T) {
 				tCtx.Run("Pod", func(tCtx ktesting.TContext) { testPod(tCtx, true) })
 				// Number of devices per slice is chosen so that Filter takes a few seconds:
 				// without a timeout, the test doesn't run too long, but long enough that a short timeout triggers.
-				tCtx.Run("FilterTimeout", func(tCtx ktesting.TContext) { testFilterTimeout(tCtx, 9) })
+				tCtx.Run("FilterTimeout", func(tCtx ktesting.TContext) { testFilterTimeout(tCtx, 20) })
 				tCtx.Run("UsesAllResources", testUsesAllResources)
 			},
 		},
@@ -159,7 +159,7 @@ func TestDRA(t *testing.T) {
 			f: func(tCtx ktesting.TContext) {
 				tCtx.Run("AdminAccess", func(tCtx ktesting.TContext) { testAdminAccess(tCtx, false) })
 				tCtx.Run("PartitionableDevices", func(tCtx ktesting.TContext) { testPartitionableDevices(tCtx, false) })
-				tCtx.Run("PrioritizedList", func(tCtx ktesting.TContext) { testPrioritizedList(tCtx, false) })
+				tCtx.Run("PrioritizedList", func(tCtx ktesting.TContext) { testPrioritizedList(tCtx, true) })
 				tCtx.Run("Pod", func(tCtx ktesting.TContext) { testPod(tCtx, true) })
 				tCtx.Run("PublishResourceSlices", func(tCtx ktesting.TContext) {
 					testPublishResourceSlices(tCtx, true, features.DRADeviceTaints, features.DRAPartitionableDevices, features.DRADeviceBindingConditions)
@@ -175,6 +175,18 @@ func TestDRA(t *testing.T) {
 				})
 				tCtx.Run("ShareResourceClaimSequentially", testShareResourceClaimSequentially)
 				tCtx.Run("UsesAllResources", testUsesAllResources)
+			},
+		},
+		// This scenario verifies that features which have graduated to GA can
+		// still be explicitly disabled via feature gates.
+		"GA-opt-out": {
+			apis: map[schema.GroupVersion]bool{},
+			features: map[featuregate.Feature]bool{
+				featuregate.Feature("AllBeta"): false,
+				features.DRAPrioritizedList:    false,
+			},
+			f: func(tCtx ktesting.TContext) {
+				tCtx.Run("PrioritizedList", func(tCtx ktesting.TContext) { testPrioritizedList(tCtx, false) })
 			},
 		},
 		"v1beta1": {

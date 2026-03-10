@@ -580,11 +580,10 @@ func (p *PriorityQueue) runPreEnqueuePlugins(ctx context.Context, pInfo *framewo
 	}()
 
 	shouldRecordMetric := rand.Intn(100) < p.pluginMetricsSamplePercent
-	logger := klog.FromContext(ctx)
 	gatingPlugin := pInfo.GatingPlugin
 	if gatingPlugin != "" {
 		// Run the gating plugin first
-		s := p.runPreEnqueuePlugin(ctx, logger, p.preEnqueuePluginMap[pod.Spec.SchedulerName][gatingPlugin], pInfo, shouldRecordMetric)
+		s := p.runPreEnqueuePlugin(ctx, p.preEnqueuePluginMap[pod.Spec.SchedulerName][gatingPlugin], pInfo, shouldRecordMetric)
 		if !s.IsSuccess() {
 			// No need to iterate other plugins
 			return
@@ -596,7 +595,7 @@ func (p *PriorityQueue) runPreEnqueuePlugins(ctx context.Context, pInfo *framewo
 			// should be run already above.
 			continue
 		}
-		s := p.runPreEnqueuePlugin(ctx, logger, pl, pInfo, shouldRecordMetric)
+		s := p.runPreEnqueuePlugin(ctx, pl, pInfo, shouldRecordMetric)
 		if !s.IsSuccess() {
 			// No need to iterate other plugins
 			return
@@ -607,7 +606,7 @@ func (p *PriorityQueue) runPreEnqueuePlugins(ctx context.Context, pInfo *framewo
 }
 
 // runPreEnqueuePlugin runs the PreEnqueue plugin and update pInfo's fields accordingly if needed.
-func (p *PriorityQueue) runPreEnqueuePlugin(ctx context.Context, logger klog.Logger, pl fwk.PreEnqueuePlugin, pInfo *framework.QueuedPodInfo, shouldRecordMetric bool) *fwk.Status {
+func (p *PriorityQueue) runPreEnqueuePlugin(ctx context.Context, pl fwk.PreEnqueuePlugin, pInfo *framework.QueuedPodInfo, shouldRecordMetric bool) *fwk.Status {
 	pod := pInfo.Pod
 	startTime := p.clock.Now()
 	s := pl.PreEnqueue(ctx, pod)
@@ -628,7 +627,7 @@ func (p *PriorityQueue) runPreEnqueuePlugin(ctx context.Context, logger klog.Log
 	if s.Code() == fwk.Error {
 		utilruntime.HandleErrorWithContext(ctx, s.AsError(), "Unexpected error running PreEnqueue plugin", "pod", klog.KObj(pod), "plugin", pl.Name())
 	} else {
-		logger.V(4).Info("Status after running PreEnqueue plugin", "pod", klog.KObj(pod), "plugin", pl.Name(), "status", s)
+		klog.FromContext(ctx).V(4).Info("Status after running PreEnqueue plugin", "pod", klog.KObj(pod), "plugin", pl.Name(), "status", s)
 	}
 
 	return s
@@ -907,8 +906,8 @@ func (p *PriorityQueue) AddUnschedulableIfNotPresent(logger klog.Logger, pInfo *
 	pInfo.BackoffExpiration = time.Time{}
 	// Clear the flush flag since the pod is returning to the queue after a scheduling attempt.
 	pInfo.WasFlushedFromUnschedulable = false
-	// Pod with Workload reference should always need the cycle after got unschedulable for some reason.
-	pInfo.NeedsPodGroupScheduling = p.isGenericWorkloadEnabled && pod.Spec.WorkloadRef != nil
+	// Pod with scheduling group should always need the cycle after got unschedulable for some reason.
+	pInfo.NeedsPodGroupScheduling = p.isGenericWorkloadEnabled && pod.Spec.SchedulingGroup != nil
 
 	if !p.isSchedulingQueueHintEnabled {
 		// fall back to the old behavior which doesn't depend on the queueing hint.
@@ -1497,7 +1496,7 @@ func (p *PriorityQueue) newQueuedPodInfo(pod *v1.Pod, plugins ...string) *framew
 		Timestamp:               now,
 		InitialAttemptTimestamp: nil,
 		UnschedulablePlugins:    sets.New(plugins...),
-		NeedsPodGroupScheduling: p.isGenericWorkloadEnabled && pod.Spec.WorkloadRef != nil,
+		NeedsPodGroupScheduling: p.isGenericWorkloadEnabled && pod.Spec.SchedulingGroup != nil,
 	}
 }
 

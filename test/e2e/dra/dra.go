@@ -511,7 +511,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 			gomega.Expect(driver.Nodes[node].GetPreparedResources()).Should(gomega.Equal([]testdriverapp.ClaimID{{Name: newClaim.Name, UID: newClaim.UID}}), "Only new claim should be prepared now because new pod is running.")
 		})
 
-		f.It("DaemonSet with admin access", f.WithFeatureGate(features.DRAAdminAccess), func(ctx context.Context) {
+		f.It("DaemonSet with admin access", func(ctx context.Context) {
 			// Ensure namespace has the dra admin label.
 			_, err := f.ClientSet.CoreV1().Namespaces().Apply(ctx,
 				applyv1.Namespace(f.Namespace.Name).WithLabels(map[string]string{"resource.kubernetes.io/admin-access": "true"}),
@@ -875,7 +875,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 			tCtx := f.TContext(ctx)
 			var objects []klog.KMetadata
 			pods := make([]*v1.Pod, numPods)
-			for i := 0; i < numPods; i++ {
+			for i := range numPods {
 				pod, template := b.PodInline()
 				pods[i] = pod
 				objects = append(objects, pod, template)
@@ -886,7 +886,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 			// We don't know the order. All that matters is that all of them get scheduled eventually.
 			var wg sync.WaitGroup
 			wg.Add(numPods)
-			for i := 0; i < numPods; i++ {
+			for i := range numPods {
 				pod := pods[i]
 				go func() {
 					defer ginkgo.GinkgoRecover()
@@ -906,7 +906,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 			claim := b.ExternalClaim()
 			objects = append(objects, claim)
 			pods := make([]*v1.Pod, numPods)
-			for i := 0; i < numPods; i++ {
+			for i := range numPods {
 				pod := b.PodExternal(claim.Name)
 				pods[i] = pod
 				objects = append(objects, pod)
@@ -918,7 +918,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 			f.Timeouts.PodStartSlow *= time.Duration(numPods)
 			var wg sync.WaitGroup
 			wg.Add(numPods)
-			for i := 0; i < numPods; i++ {
+			for i := range numPods {
 				pod := pods[i]
 				go func() {
 					defer ginkgo.GinkgoRecover()
@@ -2237,7 +2237,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 		}).WithTimeout(time.Minute).Should(gomega.BeTrueBecause("extended resource claim should be automatically deleted when pod %s", cleanupMessage))
 	}
 
-	framework.Context(f.WithFeatureGate(features.DRAExtendedResource), func() {
+	framework.Context(f.WithFeatureGate(features.DRAExtendedResource), feature.DynamicResourceAllocation, f.WithLabel("KubeletMinVersion:1.36"), func() {
 		nodes := drautils.NewNodes(f, 1, 1)
 		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(10, false))
 		b := drautils.NewBuilder(f, driver)
@@ -2674,7 +2674,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 		})
 	})
 
-	framework.Context(f.WithFeatureGate(features.DRAExtendedResource), func() {
+	framework.Context(f.WithFeatureGate(features.DRAExtendedResource), feature.DynamicResourceAllocation, f.WithLabel("KubeletMinVersion:1.36"), func() {
 		nodes := drautils.NewNodes(f, 2, 2)
 		nodes.NumReservedNodes = 1
 		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(2, false))
@@ -2753,7 +2753,7 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 		driver.WithKubelet = false
 		b := drautils.NewBuilder(f, driver)
 
-		f.It("validate ResourceClaimTemplate and ResourceClaim for admin access", f.WithFeatureGate(features.DRAAdminAccess), func(ctx context.Context) {
+		f.It("validate ResourceClaimTemplate and ResourceClaim for admin access", func(ctx context.Context) {
 			// Attempt to create claim and claim template with admin access. Must fail eventually.
 			claim := b.ExternalClaim()
 			claim.Spec.Devices.Requests[0].Exactly.AdminAccess = ptr.To(true)
@@ -3134,5 +3134,192 @@ var _ = framework.SIGDescribe("node")(framework.WithLabel("DRA"), func() {
 		multipleDriversContext("using only drapbv1beta1", true, false)
 		multipleDriversContext("using only drapbv1", false, true)
 		multipleDriversContext("using drapbv1beta1 and drapbv1", true, true)
+	})
+
+	// Test for device health reporting with custom messages
+	framework.Context("kubelet", feature.DynamicResourceAllocation, func() {
+		nodes := drautils.NewNodes(f, 1, 1)
+		driver := drautils.NewDriver(f, nodes, drautils.NetworkResources(10, false))
+		b := drautils.NewBuilder(f, driver)
+
+		f.It("should report device health with custom messages", f.WithLabel("KubeletMinVersion:1.36"), framework.WithFeatureGate(features.ResourceHealthStatusMessage), func(ctx context.Context) {
+			claimName := "health-test-claim"
+			claim := b.ExternalClaim()
+			claim.Name = claimName
+			pod := b.PodExternal(claimName)
+			pod.Spec.ResourceClaims[0].ResourceClaimName = &claim.Name
+			b.Create(f.TContext(ctx), claim, pod)
+
+			// Wait for pod to start running
+			framework.ExpectNoError(e2epod.WaitForPodRunningInNamespace(ctx, f.ClientSet, pod), "start pod")
+
+			// Get the pool name and device name from the allocated claim
+			allocatedClaim, err := f.ClientSet.ResourceV1().ResourceClaims(f.Namespace.Name).Get(ctx, claim.Name, metav1.GetOptions{})
+			framework.ExpectNoError(err)
+			gomega.Expect(allocatedClaim.Status.Allocation).ToNot(gomega.BeNil())
+			gomega.Expect(allocatedClaim.Status.Allocation.Devices.Results).To(gomega.HaveLen(1))
+
+			poolName := allocatedClaim.Status.Allocation.Devices.Results[0].Pool
+			deviceName := allocatedClaim.Status.Allocation.Devices.Results[0].Device
+
+			// Get the plugin for the node where the pod is scheduled
+			scheduledPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+			framework.ExpectNoError(err)
+			plugin, ok := driver.Nodes[scheduledPod.Spec.NodeName]
+			if !ok {
+				framework.Failf("pod got scheduled to node %s without a plugin", scheduledPod.Spec.NodeName)
+			}
+
+			// Test 1: Set and check initial healthy status with message
+			ginkgo.By("Setting initial healthy status with message")
+			plugin.HealthControlChan <- testdriverapp.DeviceHealthUpdate{
+				PoolName:   poolName,
+				DeviceName: deviceName,
+				Health:     "Healthy",
+				Message:    "Device operating normally, temperature: 45°C",
+			}
+
+			ginkgo.By("Checking initial healthy status with message")
+			gomega.Eventually(ctx, func(ctx context.Context) string {
+				updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return ""
+				}
+
+				for _, cs := range updatedPod.Status.ContainerStatuses {
+					for _, rs := range cs.AllocatedResourcesStatus {
+						if rs.Name == v1.ResourceName(fmt.Sprintf("claim:%s", pod.Spec.ResourceClaims[0].Name)) {
+							for _, rh := range rs.Resources {
+								return ptr.Deref(rh.Message, "")
+							}
+						}
+					}
+				}
+				return ""
+			}).WithTimeout(30 * time.Second).Should(gomega.Equal("Device operating normally, temperature: 45°C"))
+
+			// Test 2: Mark device as unhealthy with error message
+			ginkgo.By("Marking device as unhealthy with error message")
+			plugin.HealthControlChan <- testdriverapp.DeviceHealthUpdate{
+				PoolName:   poolName,
+				DeviceName: deviceName,
+				Health:     "Unhealthy",
+				Message:    "ECC error count exceeded threshold (15 errors in last hour)",
+			}
+
+			// First Eventually: Check health status
+			gomega.Eventually(ctx, func(ctx context.Context) v1.ResourceHealthStatus {
+				updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return ""
+				}
+
+				for _, cs := range updatedPod.Status.ContainerStatuses {
+					for _, rs := range cs.AllocatedResourcesStatus {
+						if rs.Name == v1.ResourceName(fmt.Sprintf("claim:%s", pod.Spec.ResourceClaims[0].Name)) {
+							for _, rh := range rs.Resources {
+								return rh.Health
+							}
+						}
+					}
+				}
+				return ""
+			}).WithTimeout(30 * time.Second).Should(gomega.Equal(v1.ResourceHealthStatusUnhealthy))
+
+			// Second Eventually: Check message
+			gomega.Eventually(ctx, func(ctx context.Context) string {
+				updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return ""
+				}
+
+				for _, cs := range updatedPod.Status.ContainerStatuses {
+					for _, rs := range cs.AllocatedResourcesStatus {
+						if rs.Name == v1.ResourceName(fmt.Sprintf("claim:%s", pod.Spec.ResourceClaims[0].Name)) {
+							for _, rh := range rs.Resources {
+								return ptr.Deref(rh.Message, "")
+							}
+						}
+					}
+				}
+				return ""
+			}).WithTimeout(30 * time.Second).Should(gomega.Equal("ECC error count exceeded threshold (15 errors in last hour)"))
+
+			// Test 3: Update message while still unhealthy
+			ginkgo.By("Updating message while device remains unhealthy")
+			plugin.HealthControlChan <- testdriverapp.DeviceHealthUpdate{
+				PoolName:   poolName,
+				DeviceName: deviceName,
+				Health:     "Unhealthy",
+				Message:    "Critical: Memory corruption detected",
+			}
+
+			gomega.Eventually(ctx, func(ctx context.Context) string {
+				updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return ""
+				}
+
+				for _, cs := range updatedPod.Status.ContainerStatuses {
+					for _, rs := range cs.AllocatedResourcesStatus {
+						if rs.Name == v1.ResourceName(fmt.Sprintf("claim:%s", pod.Spec.ResourceClaims[0].Name)) {
+							for _, rh := range rs.Resources {
+								if rh.Health == v1.ResourceHealthStatusUnhealthy {
+									return ptr.Deref(rh.Message, "")
+								}
+							}
+						}
+					}
+				}
+				return ""
+			}).WithTimeout(30 * time.Second).Should(gomega.Equal("Critical: Memory corruption detected"))
+
+			// Test 4: Mark device as healthy with recovery message
+			ginkgo.By("Marking device as healthy with recovery message")
+			plugin.HealthControlChan <- testdriverapp.DeviceHealthUpdate{
+				PoolName:   poolName,
+				DeviceName: deviceName,
+				Health:     "Healthy",
+				Message:    "Recovered after reset, all diagnostics passed",
+			}
+
+			// First Eventually: Check health status
+			gomega.Eventually(ctx, func(ctx context.Context) v1.ResourceHealthStatus {
+				updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return ""
+				}
+
+				for _, cs := range updatedPod.Status.ContainerStatuses {
+					for _, rs := range cs.AllocatedResourcesStatus {
+						if rs.Name == v1.ResourceName(fmt.Sprintf("claim:%s", pod.Spec.ResourceClaims[0].Name)) {
+							for _, rh := range rs.Resources {
+								return rh.Health
+							}
+						}
+					}
+				}
+				return ""
+			}).WithTimeout(30 * time.Second).Should(gomega.Equal(v1.ResourceHealthStatusHealthy))
+
+			// Second Eventually: Check message
+			gomega.Eventually(ctx, func(ctx context.Context) string {
+				updatedPod, err := f.ClientSet.CoreV1().Pods(pod.Namespace).Get(ctx, pod.Name, metav1.GetOptions{})
+				if err != nil {
+					return ""
+				}
+
+				for _, cs := range updatedPod.Status.ContainerStatuses {
+					for _, rs := range cs.AllocatedResourcesStatus {
+						if rs.Name == v1.ResourceName(fmt.Sprintf("claim:%s", pod.Spec.ResourceClaims[0].Name)) {
+							for _, rh := range rs.Resources {
+								return ptr.Deref(rh.Message, "")
+							}
+						}
+					}
+				}
+				return ""
+			}).WithTimeout(30 * time.Second).Should(gomega.Equal("Recovered after reset, all diagnostics passed"))
+		})
 	})
 })

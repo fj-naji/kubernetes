@@ -10244,6 +10244,23 @@
       ],
       "type": "object"
     },
+    "io.k8s.api.core.v1.PodSchedulingGroup": {
+      "description": "PodSchedulingGroup identifies the runtime scheduling group instance that a Pod belongs to. The scheduler uses this information to apply workload-aware scheduling semantics. Exactly one field must be specified.",
+      "properties": {
+        "podGroupName": {
+          "description": "PodGroupName specifies the name of the standalone PodGroup object that represents the runtime instance of this group. Must be a DNS subdomain.",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-kubernetes-unions": [
+        {
+          "fields-to-discriminateBy": {
+            "podGroupName": "PodGroupName"
+          }
+        }
+      ]
+    },
     "io.k8s.api.core.v1.PodSecurityContext": {
       "description": "PodSecurityContext holds pod-level security attributes and common container settings. Some fields are also present in container.securityContext.  Field values of container.securityContext take precedence over field values of PodSecurityContext.",
       "properties": {
@@ -10517,6 +10534,10 @@
           "x-kubernetes-patch-merge-key": "name",
           "x-kubernetes-patch-strategy": "merge"
         },
+        "schedulingGroup": {
+          "$ref": "#/definitions/io.k8s.api.core.v1.PodSchedulingGroup",
+          "description": "SchedulingGroup provides a reference to the immediate scheduling runtime grouping object that this Pod belongs to. This field is used by the scheduler to identify the group and apply the correct group scheduling policies. The association with a group also impacts other lifecycle aspects of a Pod that are relevant in a wider context of scheduling like preemption, resource attachment, etc. If not specified, the Pod is treated as a single unit in all of these aspects. The group object referenced by this field may not exist at the time the Pod is created. This field is immutable, but a group object with the same name may be recreated with different policies. Doing this during pod scheduling may result in the placement not conforming to the expected policies."
+        },
         "securityContext": {
           "$ref": "#/definitions/io.k8s.api.core.v1.PodSecurityContext",
           "description": "SecurityContext holds pod-level security attributes and common container settings. Optional: Defaults to empty.  See type description for default values of each field."
@@ -10580,10 +10601,6 @@
           "x-kubernetes-list-type": "map",
           "x-kubernetes-patch-merge-key": "name",
           "x-kubernetes-patch-strategy": "merge,retainKeys"
-        },
-        "workloadRef": {
-          "$ref": "#/definitions/io.k8s.api.core.v1.WorkloadReference",
-          "description": "WorkloadRef provides a reference to the Workload object that this Pod belongs to. This field is used by the scheduler to identify the PodGroup and apply the correct group scheduling policies. The Workload object referenced by this field may not exist at the time the Pod is created. This field is immutable, but a Workload object with the same name may be recreated with different policies. Doing this during pod scheduling may result in the placement not conforming to the expected policies."
         }
       },
       "required": [
@@ -11281,6 +11298,10 @@
       "properties": {
         "health": {
           "description": "Health of the resource. can be one of:\n - Healthy: operates as normal\n - Unhealthy: reported unhealthy. We consider this a temporary health issue\n              since we do not have a mechanism today to distinguish\n              temporary and permanent issues.\n - Unknown: The status cannot be determined.\n            For example, Device Plugin got unregistered and hasn't been re-registered since.\n\nIn future we may want to introduce the PermanentlyUnhealthy Status.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Message provides human-readable context for Health (e.g. \"ECC error count exceeded threshold\"). This field is populated by the kubelet when ResourceHealthStatusMessage is enabled if the DRA plugin returns a message, and is null otherwise.",
           "type": "string"
         },
         "resourceID": {
@@ -12612,7 +12633,7 @@
         },
         "image": {
           "$ref": "#/definitions/io.k8s.api.core.v1.ImageVolumeSource",
-          "description": "image represents an OCI object (a container image or artifact) pulled and mounted on the kubelet's host machine. The volume is resolved at pod startup depending on which PullPolicy value is provided:\n\n- Always: the kubelet always attempts to pull the reference. Container creation will fail If the pull fails. - Never: the kubelet never pulls the reference and only uses a local image or artifact. Container creation will fail if the reference isn't present. - IfNotPresent: the kubelet pulls if the reference isn't already present on disk. Container creation will fail if the reference isn't present and the pull fails.\n\nThe volume gets re-resolved if the pod gets deleted and recreated, which means that new remote content will become available on pod recreation. A failure to resolve or pull the image during pod startup will block containers from starting and may add significant latency. Failures will be retried using normal volume backoff and will be reported on the pod reason and message. The types of objects that may be mounted by this volume are defined by the container runtime implementation on a host machine and at minimum must include all valid types supported by the container image field. The OCI object gets mounted in a single directory (spec.containers[*].volumeMounts.mountPath) by merging the manifest layers in the same way as for container images. The volume will be mounted read-only (ro) and non-executable files (noexec). Sub path mounts for containers are not supported (spec.containers[*].volumeMounts.subpath) before 1.33. The field spec.securityContext.fsGroupChangePolicy has no effect on this volume type."
+          "description": "image represents an OCI object (a container image or artifact) pulled and mounted on the kubelet's host machine. The volume is resolved at pod startup depending on which PullPolicy value is provided:\n\n- Always: the kubelet always attempts to pull the reference. Container creation will fail If the pull fails. - Never: the kubelet never pulls the reference and only uses a local image or artifact. Container creation will fail if the reference isn't present. - IfNotPresent: the kubelet pulls if the reference isn't already present on disk. Container creation will fail if the reference isn't present and the pull fails.\n\nThe volume gets re-resolved if the pod gets deleted and recreated, which means that new remote content will become available on pod recreation. A failure to resolve or pull the image during pod startup will block containers from starting and may add significant latency. Failures will be retried using normal volume backoff and will be reported on the pod reason and message. The types of objects that may be mounted by this volume are defined by the container runtime implementation on a host machine and at minimum must include all valid types supported by the container image field. The OCI object gets mounted in a single directory (spec.containers[*].volumeMounts.mountPath) by merging the manifest layers in the same way as for container images. The volume will be mounted read-only (ro). Sub path mounts for containers are not supported (spec.containers[*].volumeMounts.subpath) before 1.33. The field spec.securityContext.fsGroupChangePolicy has no effect on this volume type."
         },
         "iscsi": {
           "$ref": "#/definitions/io.k8s.api.core.v1.ISCSIVolumeSource",
@@ -12892,28 +12913,6 @@
           "type": "string"
         }
       },
-      "type": "object"
-    },
-    "io.k8s.api.core.v1.WorkloadReference": {
-      "description": "WorkloadReference identifies the Workload object and PodGroup membership that a Pod belongs to. The scheduler uses this information to apply workload-aware scheduling semantics.",
-      "properties": {
-        "name": {
-          "description": "Name defines the name of the Workload object this Pod belongs to. Workload must be in the same namespace as the Pod. If it doesn't match any existing Workload, the Pod will remain unschedulable until a Workload object is created and observed by the kube-scheduler. It must be a DNS subdomain.",
-          "type": "string"
-        },
-        "podGroup": {
-          "description": "PodGroup is the name of the PodGroup within the Workload that this Pod belongs to. If it doesn't match any existing PodGroup within the Workload, the Pod will remain unschedulable until the Workload object is recreated and observed by the kube-scheduler. It must be a DNS label.",
-          "type": "string"
-        },
-        "podGroupReplicaKey": {
-          "description": "PodGroupReplicaKey specifies the replica key of the PodGroup to which this Pod belongs. It is used to distinguish pods belonging to different replicas of the same pod group. The pod group policy is applied separately to each replica. When set, it must be a DNS label.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "name",
-        "podGroup"
-      ],
       "type": "object"
     },
     "io.k8s.api.discovery.v1.Endpoint": {
@@ -16020,7 +16019,7 @@
           "x-kubernetes-list-type": "atomic"
         },
         "extendedResourceName": {
-          "description": "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is an alpha field.",
+          "description": "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is a beta field.",
           "type": "string"
         },
         "selectors": {
@@ -16106,7 +16105,7 @@
       "description": "DeviceRequestAllocationResult contains the allocation result for one request.",
       "properties": {
         "adminAccess": {
-          "description": "AdminAccess indicates that this device was allocated for administrative access. See the corresponding request field for a definition of mode.\n\nThis is an beta field and requires enabling the DRAAdminAccess feature gate. Admin access is disabled if this field is unset or set to false, otherwise it is enabled.",
+          "description": "AdminAccess indicates that this device was allocated for administrative access. See the corresponding request field for a definition of mode.\n\nAdmin access is disabled if this field is unset or set to false, otherwise it is enabled.",
           "type": "boolean"
         },
         "bindingConditions": {
@@ -16239,7 +16238,7 @@
         },
         "timeAdded": {
           "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-          "description": "TimeAdded represents the time at which the taint was added. Added automatically during create or update if not set."
+          "description": "TimeAdded represents the time at which the taint was added or (only in a DeviceTaintRule) the effect was modified. Added automatically during create or update if not set.\n\nIn addition, in a DeviceTaintRule a value provided during an update gets replaced with the current time if the provided value is the same as the old one and the new effect is different. Changing the key and/or value while keeping the effect unchanged is possible and does not update the time stamp because the eviction which uses it is either already started (NoExecute) or not started yet (NoEffect, NoSchedule)."
         },
         "value": {
           "description": "The taint value corresponding to the taint key. Must be a label value.",
@@ -16283,7 +16282,7 @@
       "description": "ExactDeviceRequest is a request for one or more identical devices.",
       "properties": {
         "adminAccess": {
-          "description": "AdminAccess indicates that this is a claim for administrative access to the device(s). Claims with AdminAccess are expected to be used for monitoring or other management services for a device.  They ignore all ordinary claims to the device with respect to access modes and any resource allocations.\n\nThis is an beta field and requires enabling the DRAAdminAccess feature gate. Admin access is disabled if this field is unset or set to false, otherwise it is enabled.",
+          "description": "AdminAccess indicates that this is a claim for administrative access to the device(s). Claims with AdminAccess are expected to be used for monitoring or other management services for a device.  They ignore all ordinary claims to the device with respect to access modes and any resource allocations.\n\nAdmin access is disabled if this field is unset or set to false, otherwise it is enabled.",
           "type": "boolean"
         },
         "allocationMode": {
@@ -16329,11 +16328,11 @@
       "description": "NetworkDeviceData provides network-related details for the allocated device. This information may be filled by drivers or other components to configure or identify the device within a network context.",
       "properties": {
         "hardwareAddress": {
-          "description": "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 characters.",
+          "description": "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 bytes.",
           "type": "string"
         },
         "interfaceName": {
-          "description": "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 characters.",
+          "description": "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 bytes.",
           "type": "string"
         },
         "ips": {
@@ -16749,7 +16748,7 @@
         },
         "timeAdded": {
           "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-          "description": "TimeAdded represents the time at which the taint was added. Added automatically during create or update if not set."
+          "description": "TimeAdded represents the time at which the taint was added or (only in a DeviceTaintRule) the effect was modified. Added automatically during create or update if not set.\n\nIn addition, in a DeviceTaintRule a value provided during an update gets replaced with the current time if the provided value is the same as the old one and the new effect is different. Changing the key and/or value while keeping the effect unchanged is possible and does not update the time stamp because the eviction which uses it is either already started (NoExecute) or not started yet (NoEffect, NoSchedule)."
         },
         "value": {
           "description": "The taint value corresponding to the taint key. Must be a label value.",
@@ -17367,7 +17366,7 @@
           "x-kubernetes-list-type": "atomic"
         },
         "extendedResourceName": {
-          "description": "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is an alpha field.",
+          "description": "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is a beta field.",
           "type": "string"
         },
         "selectors": {
@@ -17619,7 +17618,7 @@
         },
         "timeAdded": {
           "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-          "description": "TimeAdded represents the time at which the taint was added. Added automatically during create or update if not set."
+          "description": "TimeAdded represents the time at which the taint was added or (only in a DeviceTaintRule) the effect was modified. Added automatically during create or update if not set.\n\nIn addition, in a DeviceTaintRule a value provided during an update gets replaced with the current time if the provided value is the same as the old one and the new effect is different. Changing the key and/or value while keeping the effect unchanged is possible and does not update the time stamp because the eviction which uses it is either already started (NoExecute) or not started yet (NoEffect, NoSchedule)."
         },
         "value": {
           "description": "The taint value corresponding to the taint key. Must be a label value.",
@@ -17663,11 +17662,11 @@
       "description": "NetworkDeviceData provides network-related details for the allocated device. This information may be filled by drivers or other components to configure or identify the device within a network context.",
       "properties": {
         "hardwareAddress": {
-          "description": "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 characters.",
+          "description": "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 bytes.",
           "type": "string"
         },
         "interfaceName": {
-          "description": "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 characters.",
+          "description": "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 bytes.",
           "type": "string"
         },
         "ips": {
@@ -18540,7 +18539,7 @@
           "x-kubernetes-list-type": "atomic"
         },
         "extendedResourceName": {
-          "description": "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is an alpha field.",
+          "description": "ExtendedResourceName is the extended resource name for the devices of this class. The devices of this class can be used to satisfy a pod's extended resource requests. It has the same format as the name of a pod's extended resource. It should be unique among all the device classes in a cluster. If two device classes have the same name, then the class created later is picked to satisfy a pod's extended resource requests. If two classes are created at the same time, then the name of the class lexicographically sorted first is picked.\n\nThis is a beta field.",
           "type": "string"
         },
         "selectors": {
@@ -18759,7 +18758,7 @@
         },
         "timeAdded": {
           "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-          "description": "TimeAdded represents the time at which the taint was added. Added automatically during create or update if not set."
+          "description": "TimeAdded represents the time at which the taint was added or (only in a DeviceTaintRule) the effect was modified. Added automatically during create or update if not set.\n\nIn addition, in a DeviceTaintRule a value provided during an update gets replaced with the current time if the provided value is the same as the old one and the new effect is different. Changing the key and/or value while keeping the effect unchanged is possible and does not update the time stamp because the eviction which uses it is either already started (NoExecute) or not started yet (NoEffect, NoSchedule)."
         },
         "value": {
           "description": "The taint value corresponding to the taint key. Must be a label value.",
@@ -18849,11 +18848,11 @@
       "description": "NetworkDeviceData provides network-related details for the allocated device. This information may be filled by drivers or other components to configure or identify the device within a network context.",
       "properties": {
         "hardwareAddress": {
-          "description": "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 characters.",
+          "description": "HardwareAddress represents the hardware address (e.g. MAC Address) of the device's network interface.\n\nMust not be longer than 128 bytes.",
           "type": "string"
         },
         "interfaceName": {
-          "description": "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 characters.",
+          "description": "InterfaceName specifies the name of the network interface associated with the allocated device. This might be the name of a physical or virtual network interface being configured in the pod.\n\nMust not be longer than 256 bytes.",
           "type": "string"
         },
         "ips": {
@@ -19333,11 +19332,11 @@
         }
       ]
     },
-    "io.k8s.api.scheduling.v1alpha1.BasicSchedulingPolicy": {
+    "io.k8s.api.scheduling.v1alpha2.BasicSchedulingPolicy": {
       "description": "BasicSchedulingPolicy indicates that standard Kubernetes scheduling behavior should be used.",
       "type": "object"
     },
-    "io.k8s.api.scheduling.v1alpha1.GangSchedulingPolicy": {
+    "io.k8s.api.scheduling.v1alpha2.GangSchedulingPolicy": {
       "description": "GangSchedulingPolicy defines the parameters for gang scheduling.",
       "properties": {
         "minCount": {
@@ -19351,33 +19350,86 @@
       ],
       "type": "object"
     },
-    "io.k8s.api.scheduling.v1alpha1.PodGroup": {
-      "description": "PodGroup represents a set of pods with a common scheduling policy.",
+    "io.k8s.api.scheduling.v1alpha2.PodGroup": {
+      "description": "PodGroup represents a runtime instance of pods grouped together. PodGroups are created by workload controllers (Job, LWS, JobSet, etc...) from Workload.podGroupTemplates. PodGroup API enablement is toggled by the GenericWorkload feature gate.",
       "properties": {
-        "name": {
-          "description": "Name is a unique identifier for the PodGroup within the Workload. It must be a DNS label. This field is immutable.",
+        "apiVersion": {
+          "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
           "type": "string"
         },
-        "policy": {
-          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.PodGroupPolicy",
-          "description": "Policy defines the scheduling policy for this PodGroup."
+        "kind": {
+          "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta",
+          "description": "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
+        },
+        "spec": {
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupSpec",
+          "description": "Spec defines the desired state of the PodGroup."
+        },
+        "status": {
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupStatus",
+          "description": "Status represents the current observed state of the PodGroup."
         }
       },
       "required": [
-        "name",
-        "policy"
+        "spec"
       ],
-      "type": "object"
+      "type": "object",
+      "x-kubernetes-group-version-kind": [
+        {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      ]
     },
-    "io.k8s.api.scheduling.v1alpha1.PodGroupPolicy": {
-      "description": "PodGroupPolicy defines the scheduling configuration for a PodGroup.",
+    "io.k8s.api.scheduling.v1alpha2.PodGroupList": {
+      "description": "PodGroupList contains a list of PodGroup resources.",
+      "properties": {
+        "apiVersion": {
+          "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
+          "type": "string"
+        },
+        "items": {
+          "description": "Items is the list of PodGroups.",
+          "items": {
+            "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
+          "type": "string"
+        },
+        "metadata": {
+          "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ListMeta",
+          "description": "Standard list metadata."
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object",
+      "x-kubernetes-group-version-kind": [
+        {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroupList",
+          "version": "v1alpha2"
+        }
+      ]
+    },
+    "io.k8s.api.scheduling.v1alpha2.PodGroupSchedulingPolicy": {
+      "description": "PodGroupSchedulingPolicy defines the scheduling configuration for a PodGroup. Exactly one policy must be set.",
       "properties": {
         "basic": {
-          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.BasicSchedulingPolicy",
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.BasicSchedulingPolicy",
           "description": "Basic specifies that the pods in this group should be scheduled using standard Kubernetes scheduling behavior."
         },
         "gang": {
-          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.GangSchedulingPolicy",
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.GangSchedulingPolicy",
           "description": "Gang specifies that the pods in this group should be scheduled using all-or-nothing semantics."
         }
       },
@@ -19391,7 +19443,78 @@
         }
       ]
     },
-    "io.k8s.api.scheduling.v1alpha1.TypedLocalObjectReference": {
+    "io.k8s.api.scheduling.v1alpha2.PodGroupSpec": {
+      "description": "PodGroupSpec defines the desired state of a PodGroup.",
+      "properties": {
+        "podGroupTemplateRef": {
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupTemplateReference",
+          "description": "PodGroupTemplateRef references an optional PodGroup template within other object (e.g. Workload) that was used to create the PodGroup. This field is immutable."
+        },
+        "schedulingPolicy": {
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupSchedulingPolicy",
+          "description": "SchedulingPolicy defines the scheduling policy for this instance of the PodGroup. Controllers are expected to fill this field by copying it from a PodGroupTemplate. This field is immutable."
+        }
+      },
+      "required": [
+        "schedulingPolicy"
+      ],
+      "type": "object"
+    },
+    "io.k8s.api.scheduling.v1alpha2.PodGroupStatus": {
+      "description": "PodGroupStatus represents information about the status of a pod group.",
+      "properties": {
+        "conditions": {
+          "description": "Conditions represent the latest observations of the PodGroup's state.\n\nKnown condition types: - \"PodGroupScheduled\": Indicates whether the scheduling requirement has been satisfied. - \"DisruptionTarget\": Indicates whether the PodGroup is about to be terminated\n  due to disruption such as preemption.\n\nKnown reasons for the PodGroupScheduled condition: - \"Unschedulable\": The PodGroup cannot be scheduled due to resource constraints,\n  affinity/anti-affinity rules, or insufficient capacity for the gang.\n- \"SchedulerError\": The PodGroup cannot be scheduled due to some internal error\n  that happened during scheduling, for example due to nodeAffinity parsing errors.\n\nKnown reasons for the DisruptionTarget condition: - \"PreemptionByScheduler\": The PodGroup was preempted by the scheduler to make room for\n  higher-priority PodGroups or Pods.",
+          "items": {
+            "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
+          },
+          "type": "array",
+          "x-kubernetes-list-map-keys": [
+            "type"
+          ],
+          "x-kubernetes-list-type": "map",
+          "x-kubernetes-patch-merge-key": "type",
+          "x-kubernetes-patch-strategy": "merge"
+        }
+      },
+      "type": "object"
+    },
+    "io.k8s.api.scheduling.v1alpha2.PodGroupTemplate": {
+      "description": "PodGroupTemplate represents a template for a set of pods with a scheduling policy.",
+      "properties": {
+        "name": {
+          "description": "Name is a unique identifier for the PodGroupTemplate within the Workload. It must be a DNS label. This field is immutable.",
+          "type": "string"
+        },
+        "schedulingPolicy": {
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupSchedulingPolicy",
+          "description": "SchedulingPolicy defines the scheduling policy for this PodGroupTemplate."
+        }
+      },
+      "required": [
+        "name",
+        "schedulingPolicy"
+      ],
+      "type": "object"
+    },
+    "io.k8s.api.scheduling.v1alpha2.PodGroupTemplateReference": {
+      "description": "PodGroupTemplateReference references a PodGroup template defined in some object (e.g. Workload). Exactly one reference must be set.",
+      "properties": {
+        "workload": {
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.WorkloadPodGroupTemplateReference",
+          "description": "Workload references the PodGroupTemplate within the Workload object that was used to create the PodGroup."
+        }
+      },
+      "type": "object",
+      "x-kubernetes-unions": [
+        {
+          "fields-to-discriminateBy": {
+            "workload": "Workload"
+          }
+        }
+      ]
+    },
+    "io.k8s.api.scheduling.v1alpha2.TypedLocalObjectReference": {
       "description": "TypedLocalObjectReference allows to reference typed object inside the same namespace.",
       "properties": {
         "apiGroup": {
@@ -19413,8 +19536,8 @@
       ],
       "type": "object"
     },
-    "io.k8s.api.scheduling.v1alpha1.Workload": {
-      "description": "Workload allows for expressing scheduling constraints that should be used when managing lifecycle of workloads from scheduling perspective, including scheduling, preemption, eviction and other phases.",
+    "io.k8s.api.scheduling.v1alpha2.Workload": {
+      "description": "Workload allows for expressing scheduling constraints that should be used when managing the lifecycle of workloads from the scheduling perspective, including scheduling, preemption, eviction and other phases. Workload API enablement is toggled by the GenericWorkload feature gate.",
       "properties": {
         "apiVersion": {
           "description": "APIVersion defines the versioned schema of this representation of an object. Servers should convert recognized schemas to the latest internal value, and may reject unrecognized values. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources",
@@ -19426,10 +19549,10 @@
         },
         "metadata": {
           "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.ObjectMeta",
-          "description": "Standard object's metadata. Name must be a DNS subdomain."
+          "description": "Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
         },
         "spec": {
-          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.WorkloadSpec",
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.WorkloadSpec",
           "description": "Spec defines the desired behavior of a Workload."
         }
       },
@@ -19441,11 +19564,11 @@
         {
           "group": "scheduling.k8s.io",
           "kind": "Workload",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         }
       ]
     },
-    "io.k8s.api.scheduling.v1alpha1.WorkloadList": {
+    "io.k8s.api.scheduling.v1alpha2.WorkloadList": {
       "description": "WorkloadList contains a list of Workload resources.",
       "properties": {
         "apiVersion": {
@@ -19455,7 +19578,7 @@
         "items": {
           "description": "Items is the list of Workloads.",
           "items": {
-            "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+            "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
           },
           "type": "array"
         },
@@ -19476,21 +19599,39 @@
         {
           "group": "scheduling.k8s.io",
           "kind": "WorkloadList",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         }
       ]
     },
-    "io.k8s.api.scheduling.v1alpha1.WorkloadSpec": {
+    "io.k8s.api.scheduling.v1alpha2.WorkloadPodGroupTemplateReference": {
+      "description": "WorkloadPodGroupTemplateReference references the PodGroupTemplate within the Workload object.",
+      "properties": {
+        "podGroupTemplateName": {
+          "description": "PodGroupTemplateName defines the PodGroupTemplate name within the Workload object.",
+          "type": "string"
+        },
+        "workloadName": {
+          "description": "WorkloadName defines the name of the Workload object.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workloadName",
+        "podGroupTemplateName"
+      ],
+      "type": "object"
+    },
+    "io.k8s.api.scheduling.v1alpha2.WorkloadSpec": {
       "description": "WorkloadSpec defines the desired state of a Workload.",
       "properties": {
         "controllerRef": {
-          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.TypedLocalObjectReference",
-          "description": "ControllerRef is an optional reference to the controlling object, such as a Deployment or Job. This field is intended for use by tools like CLIs to provide a link back to the original workload definition. When set, it cannot be changed."
+          "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.TypedLocalObjectReference",
+          "description": "ControllerRef is an optional reference to the controlling object, such as a Deployment or Job. This field is intended for use by tools like CLIs to provide a link back to the original workload definition. This field is immutable."
         },
-        "podGroups": {
-          "description": "PodGroups is the list of pod groups that make up the Workload. The maximum number of pod groups is 8. This field is immutable.",
+        "podGroupTemplates": {
+          "description": "PodGroupTemplates is the list of templates that make up the Workload. The maximum number of templates is 8. This field is immutable.",
           "items": {
-            "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.PodGroup"
+            "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupTemplate"
           },
           "type": "array",
           "x-kubernetes-list-map-keys": [
@@ -19500,7 +19641,7 @@
         }
       },
       "required": [
-        "podGroups"
+        "podGroupTemplates"
       ],
       "type": "object"
     },
@@ -19583,7 +19724,7 @@
           "type": "string"
         },
         "nodeAllocatableUpdatePeriodSeconds": {
-          "description": "nodeAllocatableUpdatePeriodSeconds specifies the interval between periodic updates of the CSINode allocatable capacity for this driver. When set, both periodic updates and updates triggered by capacity-related failures are enabled. If not set, no updates occur (neither periodic nor upon detecting capacity-related failures), and the allocatable.count remains static. The minimum allowed value for this field is 10 seconds.\n\nThis is a beta feature and requires the MutableCSINodeAllocatableCount feature gate to be enabled.\n\nThis field is mutable.",
+          "description": "nodeAllocatableUpdatePeriodSeconds specifies the interval between periodic updates of the CSINode allocatable capacity for this driver. When set, both periodic updates and updates triggered by capacity-related failures are enabled. If not set, no updates occur (neither periodic nor upon detecting capacity-related failures), and the allocatable.count remains static. The minimum allowed value for this field is 10 seconds.\n\nThis feature requires the MutableCSINodeAllocatableCount feature gate to be enabled.\n\nThis field is mutable.",
           "format": "int64",
           "type": "integer"
         },
@@ -20158,7 +20299,7 @@
       "description": "VolumeError captures an error encountered during a volume operation.",
       "properties": {
         "errorCode": {
-          "description": "errorCode is a numeric gRPC code representing the error encountered during Attach or Detach operations.\n\nThis is an optional, beta field that requires the MutableCSINodeAllocatableCount feature gate being enabled to be set.",
+          "description": "errorCode is a numeric gRPC code representing the error encountered during Attach or Detach operations.\n\nThis field requires the MutableCSINodeAllocatableCount feature gate being enabled to be set.",
           "format": "int32",
           "type": "integer"
         },
@@ -21661,7 +21802,7 @@
         {
           "group": "scheduling.k8s.io",
           "kind": "DeleteOptions",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         },
         {
           "group": "scheduling.k8s.io",
@@ -22423,7 +22564,7 @@
         {
           "group": "scheduling.k8s.io",
           "kind": "WatchEvent",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         },
         {
           "group": "scheduling.k8s.io",
@@ -90564,7 +90705,7 @@
         }
       ]
     },
-    "/apis/scheduling.k8s.io/v1alpha1/": {
+    "/apis/scheduling.k8s.io/v1alpha2/": {
       "get": {
         "consumes": [
           "application/json",
@@ -90573,7 +90714,7 @@
           "application/cbor"
         ],
         "description": "get available resources",
-        "operationId": "getSchedulingV1alpha1APIResources",
+        "operationId": "getSchedulingV1alpha2APIResources",
         "produces": [
           "application/json",
           "application/yaml",
@@ -90595,17 +90736,17 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ]
       }
     },
-    "/apis/scheduling.k8s.io/v1alpha1/namespaces/{namespace}/workloads": {
+    "/apis/scheduling.k8s.io/v1alpha2/namespaces/{namespace}/podgroups": {
       "delete": {
         "consumes": [
           "*/*"
         ],
-        "description": "delete collection of Workload",
-        "operationId": "deleteSchedulingV1alpha1CollectionNamespacedWorkload",
+        "description": "delete collection of PodGroup",
+        "operationId": "deleteSchedulingV1alpha2CollectionNamespacedPodGroup",
         "parameters": [
           {
             "$ref": "#/parameters/body-2Y1dVQaQ"
@@ -90675,21 +90816,21 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "deletecollection",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "get": {
         "consumes": [
           "*/*"
         ],
-        "description": "list or watch objects of kind Workload",
-        "operationId": "listSchedulingV1alpha1NamespacedWorkload",
+        "description": "list or watch objects of kind PodGroup",
+        "operationId": "listSchedulingV1alpha2NamespacedPodGroup",
         "parameters": [
           {
             "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
@@ -90735,7 +90876,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.WorkloadList"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupList"
             }
           },
           "401": {
@@ -90746,13 +90887,13 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "list",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "parameters": [
@@ -90767,15 +90908,15 @@
         "consumes": [
           "*/*"
         ],
-        "description": "create a Workload",
-        "operationId": "createSchedulingV1alpha1NamespacedWorkload",
+        "description": "create a PodGroup",
+        "operationId": "createSchedulingV1alpha2NamespacedPodGroup",
         "parameters": [
           {
             "in": "body",
             "name": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           {
@@ -90806,19 +90947,19 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "202": {
             "description": "Accepted",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "401": {
@@ -90829,23 +90970,23 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "post",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       }
     },
-    "/apis/scheduling.k8s.io/v1alpha1/namespaces/{namespace}/workloads/{name}": {
+    "/apis/scheduling.k8s.io/v1alpha2/namespaces/{namespace}/podgroups/{name}": {
       "delete": {
         "consumes": [
           "*/*"
         ],
-        "description": "delete a Workload",
-        "operationId": "deleteSchedulingV1alpha1NamespacedWorkload",
+        "description": "delete a PodGroup",
+        "operationId": "deleteSchedulingV1alpha2NamespacedPodGroup",
         "parameters": [
           {
             "$ref": "#/parameters/body-2Y1dVQaQ"
@@ -90897,21 +91038,21 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "delete",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "get": {
         "consumes": [
           "*/*"
         ],
-        "description": "read the specified Workload",
-        "operationId": "readSchedulingV1alpha1NamespacedWorkload",
+        "description": "read the specified PodGroup",
+        "operationId": "readSchedulingV1alpha2NamespacedPodGroup",
         "produces": [
           "application/json",
           "application/yaml",
@@ -90922,7 +91063,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "401": {
@@ -90933,18 +91074,18 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "get",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "parameters": [
         {
-          "description": "name of the Workload",
+          "description": "name of the PodGroup",
           "in": "path",
           "name": "name",
           "required": true,
@@ -90966,8 +91107,8 @@
           "application/apply-patch+yaml",
           "application/apply-patch+cbor"
         ],
-        "description": "partially update the specified Workload",
-        "operationId": "patchSchedulingV1alpha1NamespacedWorkload",
+        "description": "partially update the specified PodGroup",
+        "operationId": "patchSchedulingV1alpha2NamespacedPodGroup",
         "parameters": [
           {
             "$ref": "#/parameters/body-78PwaGsr"
@@ -91003,13 +91144,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "401": {
@@ -91020,28 +91161,28 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "patch",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "put": {
         "consumes": [
           "*/*"
         ],
-        "description": "replace the specified Workload",
-        "operationId": "replaceSchedulingV1alpha1NamespacedWorkload",
+        "description": "replace the specified PodGroup",
+        "operationId": "replaceSchedulingV1alpha2NamespacedPodGroup",
         "parameters": [
           {
             "in": "body",
             "name": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           {
@@ -91072,13 +91213,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.Workload"
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
             }
           },
           "401": {
@@ -91089,23 +91230,793 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "put",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      }
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/namespaces/{namespace}/podgroups/{name}/status": {
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "read status of the specified PodGroup",
+        "operationId": "readSchedulingV1alpha2NamespacedPodGroupStatus",
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "get",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "description": "name of the PodGroup",
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "type": "string",
+          "uniqueItems": true
+        },
+        {
+          "$ref": "#/parameters/namespace-vgWSWtn3"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        }
+      ],
+      "patch": {
+        "consumes": [
+          "application/json-patch+json",
+          "application/merge-patch+json",
+          "application/strategic-merge-patch+json",
+          "application/apply-patch+yaml",
+          "application/apply-patch+cbor"
+        ],
+        "description": "partially update status of the specified PodGroup",
+        "operationId": "patchSchedulingV1alpha2NamespacedPodGroupStatus",
+        "parameters": [
+          {
+            "$ref": "#/parameters/body-78PwaGsr"
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/fieldManager-7c6nTn1T"
+          },
+          {
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "in": "query",
+            "name": "fieldValidation",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/force-tOGGb0Yi"
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+            }
+          },
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "patch",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      },
+      "put": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "replace status of the specified PodGroup",
+        "operationId": "replaceSchedulingV1alpha2NamespacedPodGroupStatus",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+            }
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/fieldManager-Qy4HdaTW"
+          },
+          {
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "in": "query",
+            "name": "fieldValidation",
+            "type": "string",
+            "uniqueItems": true
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+            }
+          },
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroup"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "put",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      }
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/namespaces/{namespace}/workloads": {
+      "delete": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "delete collection of Workload",
+        "operationId": "deleteSchedulingV1alpha2CollectionNamespacedWorkload",
+        "parameters": [
+          {
+            "$ref": "#/parameters/body-2Y1dVQaQ"
+          },
+          {
+            "$ref": "#/parameters/continue-QfD61s0i"
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/fieldSelector-xIcQKXFG"
+          },
+          {
+            "$ref": "#/parameters/gracePeriodSeconds--K5HaBOS"
+          },
+          {
+            "$ref": "#/parameters/ignoreStoreReadErrorWithClusterBreakingPotential-QbNkfIqj"
+          },
+          {
+            "$ref": "#/parameters/labelSelector-5Zw57w4C"
+          },
+          {
+            "$ref": "#/parameters/limit-1NfNmdNH"
+          },
+          {
+            "$ref": "#/parameters/orphanDependents-uRB25kX5"
+          },
+          {
+            "$ref": "#/parameters/propagationPolicy-6jk3prlO"
+          },
+          {
+            "$ref": "#/parameters/resourceVersion-5WAnf1kx"
+          },
+          {
+            "$ref": "#/parameters/resourceVersionMatch-t8XhRHeC"
+          },
+          {
+            "$ref": "#/parameters/sendInitialEvents-rLXlEK_k"
+          },
+          {
+            "$ref": "#/parameters/timeoutSeconds-yvYezaOC"
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "deletecollection",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "list or watch objects of kind Workload",
+        "operationId": "listSchedulingV1alpha2NamespacedWorkload",
+        "parameters": [
+          {
+            "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
+          },
+          {
+            "$ref": "#/parameters/continue-QfD61s0i"
+          },
+          {
+            "$ref": "#/parameters/fieldSelector-xIcQKXFG"
+          },
+          {
+            "$ref": "#/parameters/labelSelector-5Zw57w4C"
+          },
+          {
+            "$ref": "#/parameters/limit-1NfNmdNH"
+          },
+          {
+            "$ref": "#/parameters/resourceVersion-5WAnf1kx"
+          },
+          {
+            "$ref": "#/parameters/resourceVersionMatch-t8XhRHeC"
+          },
+          {
+            "$ref": "#/parameters/sendInitialEvents-rLXlEK_k"
+          },
+          {
+            "$ref": "#/parameters/timeoutSeconds-yvYezaOC"
+          },
+          {
+            "$ref": "#/parameters/watch-XNNPZGbK"
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor",
+          "application/json;stream=watch",
+          "application/vnd.kubernetes.protobuf;stream=watch",
+          "application/cbor-seq"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.WorkloadList"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "list",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/parameters/namespace-vgWSWtn3"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        }
+      ],
+      "post": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "create a Workload",
+        "operationId": "createSchedulingV1alpha2NamespacedWorkload",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/fieldManager-Qy4HdaTW"
+          },
+          {
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "in": "query",
+            "name": "fieldValidation",
+            "type": "string",
+            "uniqueItems": true
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "post",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      }
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/namespaces/{namespace}/workloads/{name}": {
+      "delete": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "delete a Workload",
+        "operationId": "deleteSchedulingV1alpha2NamespacedWorkload",
+        "parameters": [
+          {
+            "$ref": "#/parameters/body-2Y1dVQaQ"
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/gracePeriodSeconds--K5HaBOS"
+          },
+          {
+            "$ref": "#/parameters/ignoreStoreReadErrorWithClusterBreakingPotential-QbNkfIqj"
+          },
+          {
+            "$ref": "#/parameters/orphanDependents-uRB25kX5"
+          },
+          {
+            "$ref": "#/parameters/propagationPolicy-6jk3prlO"
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
+            }
+          },
+          "202": {
+            "description": "Accepted",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Status"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "delete",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "read the specified Workload",
+        "operationId": "readSchedulingV1alpha2NamespacedWorkload",
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "get",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "description": "name of the Workload",
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "type": "string",
+          "uniqueItems": true
+        },
+        {
+          "$ref": "#/parameters/namespace-vgWSWtn3"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        }
+      ],
+      "patch": {
+        "consumes": [
+          "application/json-patch+json",
+          "application/merge-patch+json",
+          "application/strategic-merge-patch+json",
+          "application/apply-patch+yaml",
+          "application/apply-patch+cbor"
+        ],
+        "description": "partially update the specified Workload",
+        "operationId": "patchSchedulingV1alpha2NamespacedWorkload",
+        "parameters": [
+          {
+            "$ref": "#/parameters/body-78PwaGsr"
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/fieldManager-7c6nTn1T"
+          },
+          {
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "in": "query",
+            "name": "fieldValidation",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/force-tOGGb0Yi"
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "patch",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "put": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "replace the specified Workload",
+        "operationId": "replaceSchedulingV1alpha2NamespacedWorkload",
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          {
+            "description": "When present, indicates that modifications should not be persisted. An invalid or unrecognized dryRun directive will result in an error response and no further processing of the request. Valid values are: - All: all dry run stages will be processed",
+            "in": "query",
+            "name": "dryRun",
+            "type": "string",
+            "uniqueItems": true
+          },
+          {
+            "$ref": "#/parameters/fieldManager-Qy4HdaTW"
+          },
+          {
+            "description": "fieldValidation instructs the server on how to handle objects in the request (POST/PUT/PATCH) containing unknown or duplicate fields. Valid values are: - Ignore: This will ignore any unknown fields that are silently dropped from the object, and will ignore all but the last duplicate field that the decoder encounters. This is the default behavior prior to v1.23. - Warn: This will send a warning via the standard warning response header for each unknown field that is dropped from the object, and for each duplicate field that is encountered. The request will still succeed if there are no other errors, and will only persist the last of any duplicate fields. This is the default in v1.23+ - Strict: This will fail the request with a BadRequest error if any unknown fields would be dropped from the object, or if any duplicate fields are present. The error returned from the server will contain all unknown and duplicate fields encountered.",
+            "in": "query",
+            "name": "fieldValidation",
+            "type": "string",
+            "uniqueItems": true
+          }
+        ],
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "201": {
+            "description": "Created",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.Workload"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "put",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
           "kind": "Workload",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         }
       }
     },
-    "/apis/scheduling.k8s.io/v1alpha1/watch/namespaces/{namespace}/workloads": {
+    "/apis/scheduling.k8s.io/v1alpha2/podgroups": {
       "get": {
         "consumes": [
           "*/*"
         ],
-        "description": "watch individual changes to a list of Workload. deprecated: use the 'watch' parameter with a list operation instead.",
-        "operationId": "watchSchedulingV1alpha1NamespacedWorkloadList",
+        "description": "list or watch objects of kind PodGroup",
+        "operationId": "listSchedulingV1alpha2PodGroupForAllNamespaces",
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor",
+          "application/json;stream=watch",
+          "application/vnd.kubernetes.protobuf;stream=watch",
+          "application/cbor-seq"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.PodGroupList"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "list",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
+        },
+        {
+          "$ref": "#/parameters/continue-QfD61s0i"
+        },
+        {
+          "$ref": "#/parameters/fieldSelector-xIcQKXFG"
+        },
+        {
+          "$ref": "#/parameters/labelSelector-5Zw57w4C"
+        },
+        {
+          "$ref": "#/parameters/limit-1NfNmdNH"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        },
+        {
+          "$ref": "#/parameters/resourceVersion-5WAnf1kx"
+        },
+        {
+          "$ref": "#/parameters/resourceVersionMatch-t8XhRHeC"
+        },
+        {
+          "$ref": "#/parameters/sendInitialEvents-rLXlEK_k"
+        },
+        {
+          "$ref": "#/parameters/timeoutSeconds-yvYezaOC"
+        },
+        {
+          "$ref": "#/parameters/watch-XNNPZGbK"
+        }
+      ]
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/watch/namespaces/{namespace}/podgroups": {
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "watch individual changes to a list of PodGroup. deprecated: use the 'watch' parameter with a list operation instead.",
+        "operationId": "watchSchedulingV1alpha2NamespacedPodGroupList",
         "produces": [
           "application/json",
           "application/yaml",
@@ -91130,13 +92041,13 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "watchlist",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "parameters": [
@@ -91178,13 +92089,13 @@
         }
       ]
     },
-    "/apis/scheduling.k8s.io/v1alpha1/watch/namespaces/{namespace}/workloads/{name}": {
+    "/apis/scheduling.k8s.io/v1alpha2/watch/namespaces/{namespace}/podgroups/{name}": {
       "get": {
         "consumes": [
           "*/*"
         ],
-        "description": "watch changes to an object of kind Workload. deprecated: use the 'watch' parameter with a list operation instead, filtered to a single item with the 'fieldSelector' parameter.",
-        "operationId": "watchSchedulingV1alpha1NamespacedWorkload",
+        "description": "watch changes to an object of kind PodGroup. deprecated: use the 'watch' parameter with a list operation instead, filtered to a single item with the 'fieldSelector' parameter.",
+        "operationId": "watchSchedulingV1alpha2NamespacedPodGroup",
         "produces": [
           "application/json",
           "application/yaml",
@@ -91209,13 +92120,179 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "watch",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "PodGroup",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
+        },
+        {
+          "$ref": "#/parameters/continue-QfD61s0i"
+        },
+        {
+          "$ref": "#/parameters/fieldSelector-xIcQKXFG"
+        },
+        {
+          "$ref": "#/parameters/labelSelector-5Zw57w4C"
+        },
+        {
+          "$ref": "#/parameters/limit-1NfNmdNH"
+        },
+        {
+          "description": "name of the PodGroup",
+          "in": "path",
+          "name": "name",
+          "required": true,
+          "type": "string",
+          "uniqueItems": true
+        },
+        {
+          "$ref": "#/parameters/namespace-vgWSWtn3"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        },
+        {
+          "$ref": "#/parameters/resourceVersion-5WAnf1kx"
+        },
+        {
+          "$ref": "#/parameters/resourceVersionMatch-t8XhRHeC"
+        },
+        {
+          "$ref": "#/parameters/sendInitialEvents-rLXlEK_k"
+        },
+        {
+          "$ref": "#/parameters/timeoutSeconds-yvYezaOC"
+        },
+        {
+          "$ref": "#/parameters/watch-XNNPZGbK"
+        }
+      ]
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/watch/namespaces/{namespace}/workloads": {
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "watch individual changes to a list of Workload. deprecated: use the 'watch' parameter with a list operation instead.",
+        "operationId": "watchSchedulingV1alpha2NamespacedWorkloadList",
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor",
+          "application/json;stream=watch",
+          "application/vnd.kubernetes.protobuf;stream=watch",
+          "application/cbor-seq"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "watchlist",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
+        },
+        {
+          "$ref": "#/parameters/continue-QfD61s0i"
+        },
+        {
+          "$ref": "#/parameters/fieldSelector-xIcQKXFG"
+        },
+        {
+          "$ref": "#/parameters/labelSelector-5Zw57w4C"
+        },
+        {
+          "$ref": "#/parameters/limit-1NfNmdNH"
+        },
+        {
+          "$ref": "#/parameters/namespace-vgWSWtn3"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        },
+        {
+          "$ref": "#/parameters/resourceVersion-5WAnf1kx"
+        },
+        {
+          "$ref": "#/parameters/resourceVersionMatch-t8XhRHeC"
+        },
+        {
+          "$ref": "#/parameters/sendInitialEvents-rLXlEK_k"
+        },
+        {
+          "$ref": "#/parameters/timeoutSeconds-yvYezaOC"
+        },
+        {
+          "$ref": "#/parameters/watch-XNNPZGbK"
+        }
+      ]
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/watch/namespaces/{namespace}/workloads/{name}": {
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "watch changes to an object of kind Workload. deprecated: use the 'watch' parameter with a list operation instead, filtered to a single item with the 'fieldSelector' parameter.",
+        "operationId": "watchSchedulingV1alpha2NamespacedWorkload",
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor",
+          "application/json;stream=watch",
+          "application/vnd.kubernetes.protobuf;stream=watch",
+          "application/cbor-seq"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "watch",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
           "kind": "Workload",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         }
       },
       "parameters": [
@@ -91265,13 +92342,13 @@
         }
       ]
     },
-    "/apis/scheduling.k8s.io/v1alpha1/watch/workloads": {
+    "/apis/scheduling.k8s.io/v1alpha2/watch/podgroups": {
       "get": {
         "consumes": [
           "*/*"
         ],
-        "description": "watch individual changes to a list of Workload. deprecated: use the 'watch' parameter with a list operation instead.",
-        "operationId": "watchSchedulingV1alpha1WorkloadListForAllNamespaces",
+        "description": "watch individual changes to a list of PodGroup. deprecated: use the 'watch' parameter with a list operation instead.",
+        "operationId": "watchSchedulingV1alpha2PodGroupListForAllNamespaces",
         "produces": [
           "application/json",
           "application/yaml",
@@ -91296,13 +92373,13 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "watchlist",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
-          "kind": "Workload",
-          "version": "v1alpha1"
+          "kind": "PodGroup",
+          "version": "v1alpha2"
         }
       },
       "parameters": [
@@ -91341,13 +92418,13 @@
         }
       ]
     },
-    "/apis/scheduling.k8s.io/v1alpha1/workloads": {
+    "/apis/scheduling.k8s.io/v1alpha2/watch/workloads": {
       "get": {
         "consumes": [
           "*/*"
         ],
-        "description": "list or watch objects of kind Workload",
-        "operationId": "listSchedulingV1alpha1WorkloadForAllNamespaces",
+        "description": "watch individual changes to a list of Workload. deprecated: use the 'watch' parameter with a list operation instead.",
+        "operationId": "watchSchedulingV1alpha2WorkloadListForAllNamespaces",
         "produces": [
           "application/json",
           "application/yaml",
@@ -91361,7 +92438,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha1.WorkloadList"
+              "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.WatchEvent"
             }
           },
           "401": {
@@ -91372,13 +92449,89 @@
           "https"
         ],
         "tags": [
-          "scheduling_v1alpha1"
+          "scheduling_v1alpha2"
+        ],
+        "x-kubernetes-action": "watchlist",
+        "x-kubernetes-group-version-kind": {
+          "group": "scheduling.k8s.io",
+          "kind": "Workload",
+          "version": "v1alpha2"
+        }
+      },
+      "parameters": [
+        {
+          "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
+        },
+        {
+          "$ref": "#/parameters/continue-QfD61s0i"
+        },
+        {
+          "$ref": "#/parameters/fieldSelector-xIcQKXFG"
+        },
+        {
+          "$ref": "#/parameters/labelSelector-5Zw57w4C"
+        },
+        {
+          "$ref": "#/parameters/limit-1NfNmdNH"
+        },
+        {
+          "$ref": "#/parameters/pretty-tJGM1-ng"
+        },
+        {
+          "$ref": "#/parameters/resourceVersion-5WAnf1kx"
+        },
+        {
+          "$ref": "#/parameters/resourceVersionMatch-t8XhRHeC"
+        },
+        {
+          "$ref": "#/parameters/sendInitialEvents-rLXlEK_k"
+        },
+        {
+          "$ref": "#/parameters/timeoutSeconds-yvYezaOC"
+        },
+        {
+          "$ref": "#/parameters/watch-XNNPZGbK"
+        }
+      ]
+    },
+    "/apis/scheduling.k8s.io/v1alpha2/workloads": {
+      "get": {
+        "consumes": [
+          "*/*"
+        ],
+        "description": "list or watch objects of kind Workload",
+        "operationId": "listSchedulingV1alpha2WorkloadForAllNamespaces",
+        "produces": [
+          "application/json",
+          "application/yaml",
+          "application/vnd.kubernetes.protobuf",
+          "application/cbor",
+          "application/json;stream=watch",
+          "application/vnd.kubernetes.protobuf;stream=watch",
+          "application/cbor-seq"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "schema": {
+              "$ref": "#/definitions/io.k8s.api.scheduling.v1alpha2.WorkloadList"
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "schemes": [
+          "https"
+        ],
+        "tags": [
+          "scheduling_v1alpha2"
         ],
         "x-kubernetes-action": "list",
         "x-kubernetes-group-version-kind": {
           "group": "scheduling.k8s.io",
           "kind": "Workload",
-          "version": "v1alpha1"
+          "version": "v1alpha2"
         }
       },
       "parameters": [
