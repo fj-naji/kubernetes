@@ -147,13 +147,6 @@ type DynamicResources struct {
 	draManager     fwk.SharedDRAManager
 }
 
-const (
-	BindingConditionsStatusSuccess = "success"
-	BindingConditionsStatusFailed  = "failure"
-	BindingConditionsStatusTimeout = "timeout"
-	BindingConditionsStatusError   = "error"
-)
-
 var (
 	ErrDeviceBindingTimeout = errors.New("device binding timeout")
 	ErrDeviceBindingFailed  = errors.New("device binding failed")
@@ -1121,21 +1114,23 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 	}
 
 	// Determine status label based on error
-	statusLabel := BindingConditionsStatusSuccess
+	statusLabel := schedmetrics.BindingConditionsStatusSuccess
 	switch {
 	case err == nil:
-		logger.V(5).Info("BindingConditions is met",
-			"pod", klog.KObj(pod),
-			"node", nodeName,
-			"devices", formatBCStatusOneLine(getBindingConditionsStatusForStatus(state, statusLabel)),
-		)
+		if loggerV := logger.V(5); loggerV.Enabled() {
+			loggerV.Info("BindingConditions is met",
+				"pod", klog.KObj(pod),
+				"node", nodeName,
+				"devices", formatBCStatusOneLine(getBindingConditionsStatusForStatus(state, statusLabel)),
+			)
+		}
 		// keep success
 	case errors.Is(err, ErrDeviceBindingTimeout):
-		statusLabel = BindingConditionsStatusTimeout
+		statusLabel = schedmetrics.BindingConditionsStatusTimeout
 	case errors.Is(err, ErrDeviceBindingFailed):
-		statusLabel = BindingConditionsStatusFailed
+		statusLabel = schedmetrics.BindingConditionsStatusFailed
 	default:
-		statusLabel = BindingConditionsStatusError
+		statusLabel = schedmetrics.BindingConditionsStatusError
 	}
 
 	// Record metrics for binding conditions outcome (success/failure/timeout/error)
@@ -1153,7 +1148,7 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 		// Count scheduling attempts that used devices with BindingConditions.
 		for _, bcStatus := range listBindingConditionsStatus(claim) {
 			schedmetrics.DRABindingConditionsAllocationsTotal.
-				WithLabelValues(profileLabel, bcStatus.Driver, statusLabel).
+				WithLabelValues(profileLabel, bcStatus.driver, statusLabel).
 				Inc()
 		}
 	}
@@ -1473,11 +1468,11 @@ func getAllocatedDeviceStatus(claim *resourceapi.ResourceClaim, deviceRequest *r
 
 // bindingConditionsStatus is a compact per-device summary for BindingConditions logging.
 type bindingConditionsStatus struct {
-	Driver  string
-	Pool    string
-	Device  string
-	Pending []string
-	Failed  []string // only failure conditions that are true
+	driver  string
+	pool    string
+	device  string
+	pending []string
+	failed  []string // only failure conditions that are true
 }
 
 // listBindingConditionsStatus inspects ONE claim and returns a summary per allocated device
@@ -1496,15 +1491,15 @@ func listBindingConditionsStatus(claim *resourceapi.ResourceClaim) []bindingCond
 		}
 
 		sum := bindingConditionsStatus{
-			Driver: res.Driver,
-			Pool:   res.Pool,
-			Device: res.Device,
+			driver: res.Driver,
+			pool:   res.Pool,
+			device: res.Device,
 		}
 
 		ds := getAllocatedDeviceStatus(claim, &res)
 		if ds == nil {
 			// No status yet => all BindingConditions are pending.
-			sum.Pending = append(sum.Pending, res.BindingConditions...)
+			sum.pending = append(sum.pending, res.BindingConditions...)
 			out = append(out, sum)
 			continue
 		}
@@ -1512,14 +1507,14 @@ func listBindingConditionsStatus(claim *resourceapi.ResourceClaim) []bindingCond
 		// Failed conditions that are true.
 		for _, c := range res.BindingFailureConditions {
 			if apimeta.IsStatusConditionTrue(ds.Conditions, c) {
-				sum.Failed = append(sum.Failed, c)
+				sum.failed = append(sum.failed, c)
 			}
 		}
 
 		// Pending conditions: those not yet true.
 		for _, c := range res.BindingConditions {
 			if !apimeta.IsStatusConditionTrue(ds.Conditions, c) {
-				sum.Pending = append(sum.Pending, c)
+				sum.pending = append(sum.pending, c)
 			}
 		}
 
@@ -1535,31 +1530,31 @@ func getBindingConditionsStatusForStatus(state *stateData, statusLabel string) [
 	for _, claim := range state.claims.all() {
 		for _, s := range listBindingConditionsStatus(claim) {
 			switch statusLabel {
-			case BindingConditionsStatusSuccess:
+			case schedmetrics.BindingConditionsStatusSuccess:
 				// success: show all BC devices
-				if len(s.Failed) == 0 && len(s.Pending) == 0 {
+				if len(s.failed) == 0 && len(s.pending) == 0 {
 					out = append(out, s)
 				}
-			case BindingConditionsStatusFailed:
+			case schedmetrics.BindingConditionsStatusFailed:
 				// failure: only devices that have at least one failure condition true
-				if len(s.Failed) > 0 {
+				if len(s.failed) > 0 {
 					out = append(out, bindingConditionsStatus{
-						Driver: s.Driver,
-						Pool:   s.Pool,
-						Device: s.Device,
-						Failed: append([]string(nil), s.Failed...),
+						driver: s.driver,
+						pool:   s.pool,
+						device: s.device,
+						failed: append([]string(nil), s.failed...),
 					})
 				}
 
-			case BindingConditionsStatusTimeout:
+			case schedmetrics.BindingConditionsStatusTimeout:
 				// timeout/error: only devices still pending, and not failed
-				if len(s.Pending) > 0 && len(s.Failed) == 0 {
+				if len(s.pending) > 0 && len(s.failed) == 0 {
 					out = append(out, s)
 				}
 
 			default:
 				// Treat unknown like timeout/error
-				if len(s.Pending) > 0 && len(s.Failed) == 0 {
+				if len(s.pending) > 0 && len(s.failed) == 0 {
 					out = append(out, s)
 				}
 			}
@@ -1575,12 +1570,12 @@ func formatBCStatusOneLine(devs []bindingConditionsStatus) string {
 	}
 	parts := make([]string, 0, len(devs))
 	for _, d := range devs {
-		base := fmt.Sprintf("<driver=%s, pool=%s> %s", d.Driver, d.Pool, d.Device)
-		if len(d.Failed) > 0 {
-			base += fmt.Sprintf(" failed=[%s]", strings.Join(d.Failed, ","))
+		base := fmt.Sprintf("<driver=%s, pool=%s> %s", d.driver, d.pool, d.device)
+		if len(d.failed) > 0 {
+			base += fmt.Sprintf(" failed=[%s]", strings.Join(d.failed, ","))
 		}
-		if len(d.Pending) > 0 {
-			base += fmt.Sprintf(" pending=[%s]", strings.Join(d.Pending, ","))
+		if len(d.pending) > 0 {
+			base += fmt.Sprintf(" pending=[%s]", strings.Join(d.pending, ","))
 		}
 		parts = append(parts, base)
 	}
