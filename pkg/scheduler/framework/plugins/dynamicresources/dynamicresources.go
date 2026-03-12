@@ -147,13 +147,6 @@ type DynamicResources struct {
 	draManager     fwk.SharedDRAManager
 }
 
-const (
-	BindingConditionsStatusSuccess = "success"
-	BindingConditionsStatusFailed  = "failure"
-	BindingConditionsStatusTimeout = "timeout"
-	BindingConditionsStatusError   = "error"
-)
-
 var (
 	ErrDeviceBindingTimeout = errors.New("device binding timeout")
 	ErrDeviceBindingFailed  = errors.New("device binding failed")
@@ -1121,21 +1114,21 @@ func (pl *DynamicResources) PreBind(ctx context.Context, cs fwk.CycleState, pod 
 	}
 
 	// Determine status label based on error
-	statusLabel := BindingConditionsStatusSuccess
+	statusLabel := schedmetrics.BindingConditionsStatusSuccess
 	switch {
 	case err == nil:
 		logger.V(5).Info("BindingConditions is met",
 			"pod", klog.KObj(pod),
 			"node", nodeName,
-			"devices", formatBCStatusOneLine(getBindingConditionsStatusForStatus(state, statusLabel)),
+			"devices", bindingConditionsStatusFormatter{state, statusLabel},
 		)
 		// keep success
 	case errors.Is(err, ErrDeviceBindingTimeout):
-		statusLabel = BindingConditionsStatusTimeout
+		statusLabel = schedmetrics.BindingConditionsStatusTimeout
 	case errors.Is(err, ErrDeviceBindingFailed):
-		statusLabel = BindingConditionsStatusFailed
+		statusLabel = schedmetrics.BindingConditionsStatusFailed
 	default:
-		statusLabel = BindingConditionsStatusError
+		statusLabel = schedmetrics.BindingConditionsStatusError
 	}
 
 	// Record metrics for binding conditions outcome (success/failure/timeout/error)
@@ -1480,31 +1473,42 @@ func getAllocatedDeviceStatus(claim *resourceapi.ResourceClaim, deviceRequest *r
 	return nil
 }
 
-// bindingConditionsStatus is a compact per-device summary for BindingConditions logging.
-type bindingConditionsStatus struct {
-	Driver  string
-	Pool    string
-	Device  string
-	Pending []string
-	Failed  []string // only failure conditions that are true
+// deviceStatusFormatter implements fmt.Stringer for lazy evaluation of device status formatting.
+// This avoids expensive processing when logging is disabled.
+type bindingConditionsStatusFormatter struct {
+	state       *stateData
+	statusLabel string
+}
+
+func (d bindingConditionsStatusFormatter) String() string {
+	return formatBCStatusOneLine(getBindingConditionsStatusForStatus(d.state, d.statusLabel))
+}
+
+// BindingConditionsStatus is a compact per-device summary for BindingConditions logging.
+type BindingConditionsStatus struct {
+	Driver  string   `json:"driver"`
+	Pool    string   `json:"pool"`
+	Device  string   `json:"device"`
+	Pending []string `json:"pending,omitempty"`
+	Failed  []string `json:"failed,omitempty"` // only failure conditions that are true
 }
 
 // listBindingConditionsStatus inspects ONE claim and returns a summary per allocated device
 // that has BindingConditions.
 // - Pending: BindingConditions that are not yet true (or all conditions if device status is missing)
 // - Failed: BindingFailureConditions that are true
-func listBindingConditionsStatus(claim *resourceapi.ResourceClaim) []bindingConditionsStatus {
+func listBindingConditionsStatus(claim *resourceapi.ResourceClaim) []BindingConditionsStatus {
 	if claim == nil || claim.Status.Allocation == nil {
 		return nil
 	}
 
-	var out []bindingConditionsStatus
+	var out []BindingConditionsStatus
 	for _, res := range claim.Status.Allocation.Devices.Results {
 		if len(res.BindingConditions) == 0 {
 			continue
 		}
 
-		sum := bindingConditionsStatus{
+		sum := BindingConditionsStatus{
 			Driver: res.Driver,
 			Pool:   res.Pool,
 			Device: res.Device,
@@ -1539,20 +1543,20 @@ func listBindingConditionsStatus(claim *resourceapi.ResourceClaim) []bindingCond
 }
 
 // getBindingConditionsStatusForStatus selects which devices to log across ALL claims in the state.
-func getBindingConditionsStatusForStatus(state *stateData, statusLabel string) []bindingConditionsStatus {
-	var out []bindingConditionsStatus
+func getBindingConditionsStatusForStatus(state *stateData, statusLabel string) []BindingConditionsStatus {
+	var out []BindingConditionsStatus
 	for _, claim := range state.claims.all() {
 		for _, s := range listBindingConditionsStatus(claim) {
 			switch statusLabel {
-			case BindingConditionsStatusSuccess:
+			case schedmetrics.BindingConditionsStatusSuccess:
 				// success: show all BC devices
 				if len(s.Failed) == 0 && len(s.Pending) == 0 {
 					out = append(out, s)
 				}
-			case BindingConditionsStatusFailed:
+			case schedmetrics.BindingConditionsStatusFailed:
 				// failure: only devices that have at least one failure condition true
 				if len(s.Failed) > 0 {
-					out = append(out, bindingConditionsStatus{
+					out = append(out, BindingConditionsStatus{
 						Driver: s.Driver,
 						Pool:   s.Pool,
 						Device: s.Device,
@@ -1560,7 +1564,7 @@ func getBindingConditionsStatusForStatus(state *stateData, statusLabel string) [
 					})
 				}
 
-			case BindingConditionsStatusTimeout:
+			case schedmetrics.BindingConditionsStatusTimeout:
 				// timeout/error: only devices still pending, and not failed
 				if len(s.Pending) > 0 && len(s.Failed) == 0 {
 					out = append(out, s)
@@ -1578,7 +1582,7 @@ func getBindingConditionsStatusForStatus(state *stateData, statusLabel string) [
 }
 
 // formatBCStatusOneLine formats the selected devices into a single log-friendly line.
-func formatBCStatusOneLine(devs []bindingConditionsStatus) string {
+func formatBCStatusOneLine(devs []BindingConditionsStatus) string {
 	if len(devs) == 0 {
 		return ""
 	}

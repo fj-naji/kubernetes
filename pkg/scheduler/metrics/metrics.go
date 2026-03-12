@@ -113,6 +113,14 @@ const (
 	BatchFlushPodNotBatchable = "pod_not_batchable"
 )
 
+// DRADeviceBindingConditions status labels
+const (
+	BindingConditionsStatusSuccess = "success"
+	BindingConditionsStatusFailed  = "failure"
+	BindingConditionsStatusTimeout = "timeout"
+	BindingConditionsStatusError   = "error"
+)
+
 // All the histogram based metrics have 1ms as size for the smallest bucket.
 var (
 	scheduleAttempts             *metrics.CounterVec
