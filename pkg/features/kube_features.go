@@ -1269,6 +1269,7 @@ var defaultVersionedKubernetesFeatureGates = map[featuregate.Feature]featuregate
 
 	DRADeviceBindingConditions: {
 		{Version: version.MustParse("1.34"), Default: false, PreRelease: featuregate.Alpha},
+		{Version: version.MustParse("1.36"), Default: true, PreRelease: featuregate.Beta},
 	},
 
 	DRADeviceTaintRules: {
